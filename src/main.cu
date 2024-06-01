@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cublas_v2.h>
 #include <numeric>
+#include <cuda_runtime.h>
 
 #define TRAIN_LABELS_FILE_PATH R"(.\data\train-labels.idx1-ubyte)"
 #define TRAIN_IMAGES_FILE_PATH R"(.\data\train-images.idx3-ubyte)"
@@ -24,10 +25,211 @@
 #define L1_SIZE 128
 #define OUTPUT_SIZE 10
 
+#define BLOCK_SIZE 256
+
+#define CHECK_CUDA_ERROR(err) { \
+    if (err != cudaSuccess) { \
+        std::cerr << "CUDA error: " << cudaGetErrorString(err) << std::endl; \
+        exit(EXIT_FAILURE); \
+    } \
+}
+
+#define CHECK_CUBLAS_ERROR(err) { \
+    if (err != CUBLAS_STATUS_SUCCESS) { \
+        std::cerr << "cuBLAS error: " << _cudaGetErrorEnum(err) << std::endl; \
+        exit(EXIT_FAILURE); \
+    } \
+}
+
+const char* _cudaGetErrorEnum(cublasStatus_t error) {
+    switch (error) {
+        case CUBLAS_STATUS_SUCCESS:
+            return "CUBLAS_STATUS_SUCCESS";
+        case CUBLAS_STATUS_NOT_INITIALIZED:
+            return "CUBLAS_STATUS_NOT_INITIALIZED";
+        case CUBLAS_STATUS_ALLOC_FAILED:
+            return "CUBLAS_STATUS_ALLOC_FAILED";
+        case CUBLAS_STATUS_INVALID_VALUE:
+            return "CUBLAS_STATUS_INVALID_VALUE";
+        case CUBLAS_STATUS_ARCH_MISMATCH:
+            return "CUBLAS_STATUS_ARCH_MISMATCH";
+        case CUBLAS_STATUS_MAPPING_ERROR:
+            return "CUBLAS_STATUS_MAPPING_ERROR";
+        case CUBLAS_STATUS_EXECUTION_FAILED:
+            return "CUBLAS_STATUS_EXECUTION_FAILED";
+        case CUBLAS_STATUS_INTERNAL_ERROR:
+            return "CUBLAS_STATUS_INTERNAL_ERROR";
+        default:
+            return "<unknown>";
+    }
+}
+
 using namespace std;
 
-void forward_prop() {
-    
+cublasHandle_t handle;
+
+// CUDA kernel to add the bias vector to the activation matrix
+__global__ void add_bias(float* A, float* B, int rows, int cols) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = rows * cols;
+    if (idx < totalElements) {
+        A[idx] += B[idx%cols];
+    }
+}
+
+// CUDA kernel to apply ReLU function to the activation matrix
+__global__ void apply_ReLU(float* A, int rows, int cols) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = rows * cols;
+    if (idx < totalElements) {
+        if (A[idx] < 0) {
+            A[idx] = 0;
+        }
+    }
+}
+
+// CUDA kernel to apply softmax function to the activation matrix
+__global__ void apply_softmax(float* A, float* NORM, int rows, int cols) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = rows * cols;
+    if (idx < totalElements) {
+        A[idx] = exp(A[idx]) / NORM[idx/rows];
+    }
+}
+
+// CUDA kernel to compute softmax normalizing constants
+__global__ void compute_softmax_norm(float* A, float* NORM, int rows, int cols) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = rows * cols;
+    if (idx < totalElements) {
+        atomicAdd(&NORM[idx/rows], exp(A[idx]));
+    }
+}
+
+void forward_prop(float (&A1)[L1_SIZE*BATCH_SIZE], float (&A2)[OUTPUT_SIZE*BATCH_SIZE], float (&X)[INPUT_SIZE*BATCH_SIZE], float (&W1)[L1_SIZE*INPUT_SIZE], float (&B1)[L1_SIZE], float (&W2)[OUTPUT_SIZE*L1_SIZE], float (&B2)[OUTPUT_SIZE]) {
+    int num_blocks;
+    const float alpha = 1.0;
+    const float beta = 0.0;
+
+    // Perform A1 = W1*X
+
+    // Device memory allocation
+    float *gpu_W1, *gpu_X, *gpu_A1;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_W1, L1_SIZE * INPUT_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_X, INPUT_SIZE * BATCH_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float)));
+
+    // Copy data from host to device
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_W1, W1, L1_SIZE * INPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_X, X, INPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+
+    // Perform matrix-matrix multiplication using cuBLAS
+    CHECK_CUBLAS_ERROR(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, L1_SIZE, BATCH_SIZE, INPUT_SIZE, &alpha, gpu_W1, L1_SIZE, gpu_X, INPUT_SIZE, &beta, gpu_A1, L1_SIZE));
+
+    // Copy the result back to the host
+    CHECK_CUDA_ERROR(cudaMemcpy(A1, gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Clean up
+    CHECK_CUDA_ERROR(cudaFree(gpu_W1));
+    CHECK_CUDA_ERROR(cudaFree(gpu_X));
+
+    // Perform A1 = A1 + B1
+
+    // Device memory allocation
+    float* gpu_B1;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B1, L1_SIZE * sizeof(float)));
+
+    // Copy host data to device
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B1, B1, L1_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+
+    // Launch CUDA kernel
+    num_blocks = (L1_SIZE*BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    add_bias<<<num_blocks, BLOCK_SIZE>>>(gpu_A1, gpu_B1, L1_SIZE, BATCH_SIZE);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    // Copy the result back to the host
+    CHECK_CUDA_ERROR(cudaMemcpy(A1, gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Free device memory
+    CHECK_CUDA_ERROR(cudaFree(gpu_B1));
+
+    // Perform A1 = ReLU(A1)
+   
+    // Launch CUDA kernel
+    num_blocks = (L1_SIZE*BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    apply_ReLU<<<num_blocks, BLOCK_SIZE>>>(gpu_A1, L1_SIZE, BATCH_SIZE);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    // Copy the result back to the host
+    CHECK_CUDA_ERROR(cudaMemcpy(A1, gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Perform A2 = W2*A1
+
+    // Device memory allocation
+    float *gpu_W2, *gpu_A2;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_W2, OUTPUT_SIZE * L1_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float)));
+
+    // Copy data from host to device
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_W2, W2, OUTPUT_SIZE * L1_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+
+    // Perform matrix-matrix multiplication using cuBLAS
+    CHECK_CUBLAS_ERROR(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, OUTPUT_SIZE, BATCH_SIZE, L1_SIZE, &alpha, gpu_W2, OUTPUT_SIZE, gpu_A1, L1_SIZE, &beta, gpu_A2, OUTPUT_SIZE));
+
+    // Copy the result back to the host
+    CHECK_CUDA_ERROR(cudaMemcpy(A2, gpu_A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Clean up
+    CHECK_CUDA_ERROR(cudaFree(gpu_W2));
+    CHECK_CUDA_ERROR(cudaFree(gpu_A1));
+
+    // Perform A2 = A2 + B2
+
+    // Device memory allocation
+    float* gpu_B2;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B2, OUTPUT_SIZE * sizeof(float)));
+
+    // Copy host data to device
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B2, B2, OUTPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+
+    // Launch CUDA kernel
+    num_blocks = (OUTPUT_SIZE*BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    add_bias<<<num_blocks, BLOCK_SIZE>>>(gpu_A2, gpu_B2, OUTPUT_SIZE, BATCH_SIZE);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    // Copy the result back to the host
+    CHECK_CUDA_ERROR(cudaMemcpy(A2, gpu_A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Free device memory
+    CHECK_CUDA_ERROR(cudaFree(gpu_B2));
+
+    // Perform A2 = softmax(A2)
+
+    // Allocate memory on device
+    float* gpu_NORM;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_NORM, 1*BATCH_SIZE * sizeof(float)));
+
+    // Launch CUDA kernel
+    num_blocks = (1*BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    compute_softmax_norm<<<num_blocks, BLOCK_SIZE>>>(gpu_A2, gpu_NORM, OUTPUT_SIZE, BATCH_SIZE);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    // Launch CUDA kernel
+    num_blocks = (1*BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    apply_softmax<<<num_blocks, BLOCK_SIZE>>>(gpu_A2, gpu_NORM, OUTPUT_SIZE, BATCH_SIZE);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    // Copy the result back to the host
+    CHECK_CUDA_ERROR(cudaMemcpy(A2, gpu_A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Free device memory
+    CHECK_CUDA_ERROR(cudaFree(gpu_NORM));
+    CHECK_CUDA_ERROR(cudaFree(gpu_A2));
 }
 
 void back_prop() {
@@ -122,15 +324,23 @@ void gradient_descent(float (&W1)[L1_SIZE*INPUT_SIZE], float (&B1)[L1_SIZE], flo
         float X[INPUT_SIZE*BATCH_SIZE];
         float Y[OUTPUT_SIZE*BATCH_SIZE];
 
+        float A1[L1_SIZE*BATCH_SIZE];
+        float A2[OUTPUT_SIZE*BATCH_SIZE];
+
         // Get image and label batch
         get_image_batch(X, data_offsets, i);
         get_label_batch(Y, data_offsets, i);
 
-        // Optionally print out the training labels and images
-        print_batch(X, Y);
+        // Debug: Print batch images and labels
+        // print_batch(X, Y);
 
-        // // Forward propagate to get Z1, A1, Z2, and A2
-        // states_and_activations fp = forward_prop(X, *W1, *B1, *W2, *B2);
+        // Forward propagate to get activations A1 and A2
+        forward_prop(A1, A2, X, W1, B1, W2, B2);
+
+        // Debug: Print activations of the last layer
+        // for (int i = 0; i < OUTPUT_SIZE*BATCH_SIZE; i++) {
+        //     cout << A2[i] << " ";
+        // }
 
         // // Back propagate to get dW1, dB1, dW2, dB2
         // derivatives bp = back_prop(X, Y, fp.Z1, fp.A1, fp.Z2, fp.A2, *W2);
@@ -157,6 +367,7 @@ void gradient_descent(float (&W1)[L1_SIZE*INPUT_SIZE], float (&B1)[L1_SIZE], flo
     // return correct;
 }
 
+// Can GPU optimize
 void he_init(float *weights, int m, int n) {
     random_device rd; // Random device for seeding
     mt19937 gen(rd()); // Mersenne Twister generator
@@ -168,7 +379,6 @@ void he_init(float *weights, int m, int n) {
 
 int main() {
     // Initialize cuBLAS
-    cublasHandle_t handle;
     cublasCreate(&handle);
 
     float W1[L1_SIZE*INPUT_SIZE];
@@ -181,6 +391,6 @@ int main() {
     he_init(W2, OUTPUT_SIZE, L1_SIZE);
     
     gradient_descent(W1, B1, W2, B2);
-
+    cublasDestroy(handle);
     return 0;
 }
