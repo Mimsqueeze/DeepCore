@@ -434,7 +434,7 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     // Free GPU memory
-    CHECK_CUDA_ERROR(cudaFree(gpu_A1));
+    // CHECK_CUDA_ERROR(cudaFree(gpu_A1)); will use later
 
     // Compute dZ2/dZ1 nx10x100
     // dZ2/dZ1 = dZ2/dA1 * dA1/dZ1
@@ -572,7 +572,7 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
 
     // Array of pointers for batched matrix multiplication
     // float* dC_dZ2_array[BATCH_SIZE]; (already declared)
-    float* dZ2_dZ1_array[BATCH_SIZE];
+    // float* dZ2_dZ1_array[BATCH_SIZE]; (already declared)
     float* dC_dB1_array[BATCH_SIZE];
     for (int i = 0; i < BATCH_SIZE; i++) { // loop can be gpu optimized
         dC_dZ2_array[i] = gpu_dC_dZ2 + i * 1 * OUTPUT_SIZE;
@@ -582,7 +582,7 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
 
     // Allocate GPU memory for arrays of pointers
     // float** gpu_dC_dZ2_array; (already declared)
-    float** gpu_dZ2_dZ1_array;
+    // float** gpu_dZ2_dZ1_array; (already declared)
     float** gpu_dC_dB1_array;
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dZ2_array, BATCH_SIZE * sizeof(float*)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ2_dZ1_array, BATCH_SIZE * sizeof(float*)));
@@ -601,6 +601,15 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
 
     CHECK_CUDA_ERROR(cudaMemcpy(dC_dB1, gpu_dC_dB1, BATCH_SIZE * 1 * (L1_SIZE * 1) * sizeof(float), cudaMemcpyDeviceToHost));
 
+    // Free GPU Memory
+    // CHECK_CUDA_ERROR(cudaFree(gpu_dC_dB1)); used later
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dZ2));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dZ2_dZ1));
+
+    // CHECK_CUDA_ERROR(cudaFree(gpu_dC_dB1_array)); used later
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dZ2_array));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dZ2_dZ1_array));
+
     // Compute dC/dW1 nx1x(100x784)
     // dC/dW1 = dC/dZ2 * dZ2/dZ1 * dZ1/dW1 = L2_error * L1_error * dZ1/dW1 = dC/dB1 * dZ1/dW1
     // Can be optimized to use dC/dB1 without deallocating and reallocating
@@ -610,13 +619,13 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
     // Allocate memory on GPU
     float *gpu_dZ1_dW1; //, *gpu_A1; (already declared) // can be optimized by doing this above
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ1_dW1, BATCH_SIZE * L1_SIZE * (L1_SIZE * INPUT_SIZE) * sizeof(float)));
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float)));
+    // CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float))); allocated above
 
     // Initialize to all zeros
     CHECK_CUDA_ERROR(cudaMemset(gpu_dZ1_dW1, 0, BATCH_SIZE * L1_SIZE * (L1_SIZE * INPUT_SIZE) * sizeof(float)));
 
     // Copy data from CPU to GPU
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A1, A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+    // CHECK_CUDA_ERROR(cudaMemcpy(gpu_A1, A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice)); copied above
     
     // Launch CUDA kernel
     num_blocks = (L1_SIZE * INPUT_SIZE * BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE; // one for each element of the diagonal
@@ -649,12 +658,12 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
     // float** gpu_dC_dB1_array; (already declared)
     float** gpu_dZ1_dW1_array;
     float** gpu_dC_dW1_array;
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dB1_array, BATCH_SIZE * sizeof(float*)));
+    // CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dB1_array, BATCH_SIZE * sizeof(float*))); allocated above
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ1_dW1_array, BATCH_SIZE * sizeof(float*)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dW1_array, BATCH_SIZE * sizeof(float*)));
 
     // Copy data from CPU to GPU
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_dC_dB1_array, dC_dB1_array, BATCH_SIZE * sizeof(float*), cudaMemcpyHostToDevice));
+    // CHECK_CUDA_ERROR(cudaMemcpy(gpu_dC_dB1_array, dC_dB1_array, BATCH_SIZE * sizeof(float*), cudaMemcpyHostToDevice)); copied above
     CHECK_CUDA_ERROR(cudaMemcpy(gpu_dZ1_dW1_array, dZ1_dW1_array, BATCH_SIZE * sizeof(float*), cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(gpu_dC_dW1_array, dC_dW1_array, BATCH_SIZE * sizeof(float*), cudaMemcpyHostToDevice));
 
@@ -664,25 +673,17 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
                                           (const float**)gpu_dZ1_dW1_array, L1_SIZE,
                                           &beta, gpu_dC_dW1_array, 1, BATCH_SIZE));
 
-    CHECK_CUDA_ERROR(cudaMemcpy(dC_dW2, gpu_dC_dW1, BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE) * sizeof(float), cudaMemcpyDeviceToHost));
-
-    // Free GPU memory
-    CHECK_CUDA_ERROR(cudaFree(gpu_dZ1_dW1));
-    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dW1));
-
-    CHECK_CUDA_ERROR(cudaFree(gpu_dZ1_dW1_array));
-    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dW1_array));
+    CHECK_CUDA_ERROR(cudaMemcpy(dC_dW1, gpu_dC_dW1, BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE) * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Free GPU memory
     CHECK_CUDA_ERROR(cudaFree(gpu_dC_dB1));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dZ1_dW1));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dW1));
+
     CHECK_CUDA_ERROR(cudaFree(gpu_dC_dB1_array));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dZ1_dW1_array));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dW1_array));
 
-    // Free GPU memory
-    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dZ2));
-    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dZ2_array));
-
-    CHECK_CUDA_ERROR(cudaFree(gpu_dZ2_dZ1));
-    CHECK_CUDA_ERROR(cudaFree(gpu_dZ2_dZ1_array));
     cout << "PASS";
 }
 
