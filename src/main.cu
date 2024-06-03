@@ -206,15 +206,15 @@ __global__ void compute_dA1_dZ1(float* gpu_dA1_dZ1, float *gpu_A1, int rows, int
 
 // CUDA kernel to compute the dZx/dWx Jacobian
 // Optimized to only modify diagonal elements
-__global__ void compute_dZ_dW(float* gpu_dZ2_dW2, float *gpu_A2, int rows, int cols, int slices) {
+__global__ void compute_dZ_dW(float* gpu_dZ_dW, float *gpu_A, int rows, int cols, int slices) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int totalElements = cols * slices; // only considering diagonals
     if (idx < totalElements) {
         int slice = idx / cols; // k
         int col = idx % cols; // j
         int row = idx % rows; // i
-        int a_i = gpu_A2[slice * (cols / rows) + (col / rows)];
-        gpu_dZ2_dW2[slice * rows * cols + col * rows + row] = a_i;
+        int a_i = gpu_A[slice * (cols / rows) + (col / rows)];
+        gpu_dZ_dW[slice * rows * cols + col * rows + row] = a_i;
     }
 }
 
@@ -430,11 +430,11 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
     CHECK_CUDA_ERROR(cudaMemset(gpu_dZ2_dW2, 0, BATCH_SIZE * OUTPUT_SIZE * OUTPUT_SIZE * L1_SIZE * sizeof(float)));
 
     // Copy data from CPU to GPU
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A2, A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A1, A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice));
 
     // Launch CUDA kernel
     num_blocks = (OUTPUT_SIZE * L1_SIZE * BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE; // one for each element of the diagonal
-    compute_dZ_dW<<<num_blocks, BLOCK_SIZE>>>(gpu_dZ2_dW2, gpu_A2, OUTPUT_SIZE, OUTPUT_SIZE * L1_SIZE, BATCH_SIZE);
+    compute_dZ_dW<<<num_blocks, BLOCK_SIZE>>>(gpu_dZ2_dW2, gpu_A1, OUTPUT_SIZE, OUTPUT_SIZE * L1_SIZE, BATCH_SIZE);
     CHECK_CUDA_ERROR(cudaGetLastError());
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
@@ -489,9 +489,9 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
     CHECK_CUDA_ERROR(cudaMemcpy(gpu_dC_dB1_array, dC_dB1_array, BATCH_SIZE * sizeof(float*), cudaMemcpyHostToDevice));
 
     // Perform batched matrix multiplication using cuBLAS
-    CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, (L1_SIZE * 1), L1_SIZE,
+    CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N, 1, (L1_SIZE * 1), OUTPUT_SIZE,
                                           &alpha, (const float**)gpu_dC_dZ2_array, 1,
-                                          (const float**)gpu_dZ2_dZ1_array, L1_SIZE,
+                                          (const float**)gpu_dZ2_dZ1_array, OUTPUT_SIZE,
                                           &beta, gpu_dC_dB1_array, 1, BATCH_SIZE));
 
     CHECK_CUDA_ERROR(cudaMemcpy(dC_dB1, gpu_dC_dB1, BATCH_SIZE * 1 * (L1_SIZE * 1) * sizeof(float), cudaMemcpyDeviceToHost));
@@ -506,11 +506,11 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
     CHECK_CUDA_ERROR(cudaMemset(gpu_dZ1_dW1, 0, BATCH_SIZE * L1_SIZE * (L1_SIZE * INPUT_SIZE) * sizeof(float)));
 
     // Copy data from CPU to GPU
-    // CHECK_CUDA_ERROR(cudaMemcpy(gpu_A1, A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice)); copied above
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_X, X, INPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice));
     
     // Launch CUDA kernel
     num_blocks = (L1_SIZE * INPUT_SIZE * BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE; // one for each element of the diagonal
-    compute_dZ_dW<<<num_blocks, BLOCK_SIZE>>>(gpu_dZ1_dW1, gpu_A1, L1_SIZE, L1_SIZE * INPUT_SIZE, BATCH_SIZE);
+    compute_dZ_dW<<<num_blocks, BLOCK_SIZE>>>(gpu_dZ1_dW1, gpu_X, L1_SIZE, L1_SIZE * INPUT_SIZE, BATCH_SIZE);
     CHECK_CUDA_ERROR(cudaGetLastError());
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     
@@ -645,7 +645,7 @@ void gradient_descent(float (&W1)[L1_SIZE * INPUT_SIZE], float (&B1)[L1_SIZE], f
         // }
 
         // Back propagate to get dC/W1, dC/dB1, dC/dW2, dC/dB2
-        // back_prop(dC_dW1, dC_dB1, dC_dW2, dC_dB2, X, Y, A1, A2, W1, W2);
+        back_prop(dC_dW1, dC_dB1, dC_dW2, dC_dB2, X, Y, A1, A2, W1, W2);
 
         // // Add derivatives from mini-batch, in other words add the "nudges"
         // dW1 += bp.dW1;
@@ -697,7 +697,7 @@ void gpu_mem_init() {
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dZ2_array, BATCH_SIZE * sizeof(float*)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ2_dA1, OUTPUT_SIZE * L1_SIZE * sizeof(float))); // nx10x100 -> 10x100
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dA1_dZ1, BATCH_SIZE * L1_SIZE * L1_SIZE * sizeof(float))); // nx100x100
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ2_dZ1, BATCH_SIZE * 1 * L1_SIZE * sizeof(float))); // nx1x100
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ2_dZ1, BATCH_SIZE * OUTPUT_SIZE * L1_SIZE * sizeof(float))); // nx1x100
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ2_dA1_array, BATCH_SIZE * sizeof(float*)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dA1_dZ1_array, BATCH_SIZE * sizeof(float*)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ2_dZ1_array, BATCH_SIZE * sizeof(float*)));
