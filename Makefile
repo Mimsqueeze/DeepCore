@@ -1,9 +1,13 @@
 CC= nvcc
-CFLAGS= -O3 -lcublas
+CFLAGS= -g -G -O3 -lcublas
 
 main: src/main.cu
 	$(CC) $(CFLAGS) src/main.cu -o src/main.exe
 	src/main.exe
+
+maindebug: src/main.cu
+	$(CC) $(CFLAGS) src/main.cu -o src/main.exe
+	compute-sanitizer --tool memcheck src/main.exe 
 
 test: test/test.cu
 	$(CC) $(CFLAGS) test/test.cu -o test/test.exe
