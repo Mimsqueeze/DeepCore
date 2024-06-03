@@ -288,6 +288,9 @@ void forward_prop(float (&A1)[L1_SIZE * BATCH_SIZE], float (&A2)[OUTPUT_SIZE * B
 
     // Perform A2 = softmax(A2)
 
+    // Initialize gpu_NORM
+    CHECK_CUDA_ERROR(cudaMemset(gpu_NORM, 0, 1 * BATCH_SIZE * sizeof(float)));
+
     // Launch CUDA kernel
     num_blocks = (1 * BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
     compute_softmax_norm<<<num_blocks, BLOCK_SIZE>>>(gpu_A2, gpu_NORM, OUTPUT_SIZE, BATCH_SIZE);
@@ -642,7 +645,7 @@ void gradient_descent(float (&W1)[L1_SIZE * INPUT_SIZE], float (&B1)[L1_SIZE], f
         // }
 
         // Back propagate to get dC/W1, dC/dB1, dC/dW2, dC/dB2
-        back_prop(dC_dW1, dC_dB1, dC_dW2, dC_dB2, X, Y, A1, A2, W1, W2);
+        // back_prop(dC_dW1, dC_dB1, dC_dW2, dC_dB2, X, Y, A1, A2, W1, W2);
 
         // // Add derivatives from mini-batch, in other words add the "nudges"
         // dW1 += bp.dW1;
