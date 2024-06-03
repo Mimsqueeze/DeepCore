@@ -1,5 +1,9 @@
 *.o
 *.exe
 *.bin
+*.pdb
+*.lib
+*.exp
 /test
 /.vscode
+/backups
