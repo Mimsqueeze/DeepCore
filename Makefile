@@ -5,6 +5,10 @@ main: src/main.cu
 	$(CC) $(CFLAGS) src/main.cu -o src/main.exe
 	src/main.exe
 
+eval: src/eval.cu
+	$(CC) $(CFLAGS) src/eval.cu -o src/eval.exe
+	src/eval.exe
+
 maindebug: src/main.cu
 	$(CC) $(CFLAGS) src/main.cu -o src/main.exe
 	compute-sanitizer --tool memcheck src/main.exe

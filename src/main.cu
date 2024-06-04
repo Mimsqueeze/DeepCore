@@ -140,7 +140,6 @@ __global__ void add_bias(float* A, float* B, int rows, int cols) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     int totalElements = rows * cols;
     if (idx < totalElements) {
-        int col = idx / rows;
         int row = idx % rows;
         A[idx] += B[row];
     }
@@ -250,33 +249,39 @@ __global__ void  add_derivs(float* gpu_P, float *gpu_dP, float learning_rate, in
         gpu_P[idx] += learning_rate * avg_deriv;
     }
 }
+
+// Function to print a matrix
+void printMatrix(float* matrix, int rows, int cols) {
+    cout << fixed << setprecision(2); // Set precision to 2 decimal places
+    for (int i = 0; i < rows; ++i) {
+        for (int j = 0; j < cols; ++j) {
+            cout << matrix[j * rows + i] << " "; // Set width for formatting
+        }
+        cout << endl;
+    }
+}
+
 void forward_prop(float (&A1)[L1_SIZE * BATCH_SIZE], float (&A2)[OUTPUT_SIZE * BATCH_SIZE], float (&X)[INPUT_SIZE * BATCH_SIZE], float (&W1)[L1_SIZE * INPUT_SIZE], float (&B1)[L1_SIZE], float (&W2)[OUTPUT_SIZE * L1_SIZE], float (&B2)[OUTPUT_SIZE]) {
 
-    // Perform A1 = W1*X
-    
     // Copy data from CPU to GPU
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_W1, W1, L1_SIZE * INPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
     CHECK_CUDA_ERROR(cudaMemcpy(gpu_X, X, INPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_W1, W1, L1_SIZE * INPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B1, B1, L1_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_W2, W2, OUTPUT_SIZE * L1_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B2, B2, OUTPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+    
+    // Perform A1 = W1*X
 
     // Perform matrix-matrix multiplication using cuBLAS
     CHECK_CUBLAS_ERROR(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, L1_SIZE, BATCH_SIZE, INPUT_SIZE, &ALPHA, gpu_W1, L1_SIZE, gpu_X, INPUT_SIZE, &BETA, gpu_A1, L1_SIZE));
 
-    // Copy the result back to the CPU
-    CHECK_CUDA_ERROR(cudaMemcpy(A1, gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
-
     // Perform A1 = A1 + B1
-    
-    // Copy CPU data to GPU
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B1, B1, L1_SIZE * sizeof(float), cudaMemcpyHostToDevice));
 
     // Launch CUDA kernel
     num_blocks = (L1_SIZE * BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
     add_bias<<<num_blocks, BLOCK_SIZE>>>(gpu_A1, gpu_B1, L1_SIZE, BATCH_SIZE);
     CHECK_CUDA_ERROR(cudaGetLastError());
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-    // Copy the result back to the CPU
-    CHECK_CUDA_ERROR(cudaMemcpy(A1, gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Perform A1 = ReLU(A1)
    
@@ -286,33 +291,18 @@ void forward_prop(float (&A1)[L1_SIZE * BATCH_SIZE], float (&A2)[OUTPUT_SIZE * B
     CHECK_CUDA_ERROR(cudaGetLastError());
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
-    // Copy the result back to the CPU
-    CHECK_CUDA_ERROR(cudaMemcpy(A1, gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
-
     // Perform A2 = W2*A1
-
-    // Copy data from CPU to GPU
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_W2, W2, OUTPUT_SIZE * L1_SIZE * sizeof(float), cudaMemcpyHostToDevice));
 
     // Perform matrix-matrix multiplication using cuBLAS
     CHECK_CUBLAS_ERROR(cublasSgemm(handle, CUBLAS_OP_N, CUBLAS_OP_N, OUTPUT_SIZE, BATCH_SIZE, L1_SIZE, &ALPHA, gpu_W2, OUTPUT_SIZE, gpu_A1, L1_SIZE, &BETA, gpu_A2, OUTPUT_SIZE));
 
-    // Copy the result back to the CPU
-    CHECK_CUDA_ERROR(cudaMemcpy(A2, gpu_A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
-
     // Perform A2 = A2 + B2
-
-    // Copy CPU data to GPU
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B2, B2, OUTPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
 
     // Launch CUDA kernel
     num_blocks = (OUTPUT_SIZE * BATCH_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
     add_bias<<<num_blocks, BLOCK_SIZE>>>(gpu_A2, gpu_B2, OUTPUT_SIZE, BATCH_SIZE);
     CHECK_CUDA_ERROR(cudaGetLastError());
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
-
-    // Copy the result back to the CPU
-    CHECK_CUDA_ERROR(cudaMemcpy(A2, gpu_A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
 
     // Perform A2 = softmax(A2)
 
@@ -332,6 +322,7 @@ void forward_prop(float (&A1)[L1_SIZE * BATCH_SIZE], float (&A2)[OUTPUT_SIZE * B
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     // Copy the result back to the CPU
+    CHECK_CUDA_ERROR(cudaMemcpy(A1, gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
     CHECK_CUDA_ERROR(cudaMemcpy(A2, gpu_A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
@@ -783,7 +774,6 @@ int main() {
     cublasCreate(&handle);
 
     gpu_mem_init();
-
 
     // Initialize weights with He initialization method
     he_init(W1, L1_SIZE, INPUT_SIZE);
