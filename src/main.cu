@@ -19,7 +19,7 @@
 #define NUM_TRAIN_IMAGES 60000
 #define NUM_BATCHES (NUM_TRAIN_IMAGES/BATCH_SIZE)
 #define NUM_TEST_IMAGES 10000
-#define LEARNING_RATE 0.01f
+#define LEARNING_RATE 0.1f
 #define NUM_EPOCHS 100
 
 #define INPUT_SIZE 784
@@ -187,7 +187,10 @@ __global__ void compute_dC_dA2(float* gpu_dC_dA2, float *gpu_A2, float *gpu_Y, i
         int row_T = col;
         int rows_T = cols;
         // Using cross-entropy loss function
-        gpu_dC_dA2[idx] = -gpu_Y[col_T * rows_T + row_T] / gpu_A2[col_T * rows_T + row_T];
+        // gpu_dC_dA2[idx] = -gpu_Y[col_T * rows_T + row_T] / gpu_A2[col_T * rows_T + row_T];
+
+        // Using mean-square error
+        gpu_dC_dA2[idx] = gpu_A2[col_T * rows_T + row_T] - gpu_Y[col_T * rows_T + row_T];
     }
 }
 
@@ -661,12 +664,12 @@ void gradient_descent(float (&W1)[L1_SIZE * INPUT_SIZE], float (&B1)[L1_SIZE], f
         //     cout << endl;
         // }
 
-        for (int j = 0; j < BATCH_SIZE; j++) {
-            for (int i = 0; i < OUTPUT_SIZE; i++) {
-                cout << A2[i + j*OUTPUT_SIZE] << " " << Y[i + j*OUTPUT_SIZE] << endl;
-            }
-            cout << endl;
-        }
+        // for (int j = 0; j < BATCH_SIZE; j++) {
+        //     for (int i = 0; i < OUTPUT_SIZE; i++) {
+        //         cout << A2[i + j*OUTPUT_SIZE] << " " << Y[i + j*OUTPUT_SIZE] << endl;
+        //     }
+        //     cout << endl;
+        // }
 
         // Add the number of correct predictions from the mini-batch
         int batch_correct = get_num_correct(A2, Y);
