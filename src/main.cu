@@ -14,7 +14,7 @@
 
 #define LABEL_START 8
 #define IMAGE_START 16
-#define BATCH_SIZE 32
+#define BATCH_SIZE 1
 
 #define NUM_TRAIN_IMAGES 60000
 #define NUM_BATCHES (NUM_TRAIN_IMAGES/BATCH_SIZE)
@@ -23,7 +23,7 @@
 #define NUM_EPOCHS 100
 
 #define INPUT_SIZE 784
-#define L1_SIZE 100
+#define L1_SIZE 250
 #define OUTPUT_SIZE 10
 
 #define BLOCK_SIZE 256
@@ -137,6 +137,115 @@ using namespace std;
 
 cublasHandle_t handle;
 
+void tensorMultiplyTranspose(const float* h_A, const float* h_B, float* h_C, int batchSize, int m, int n, int k) {
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+
+    float *d_A, *d_B, *d_C;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_A, batchSize * m * k * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_B, batchSize * k * n * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_C, batchSize * m * n * sizeof(float)));
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_A, h_A, batchSize * m * k * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_B, h_B, batchSize * k * n * sizeof(float), cudaMemcpyHostToDevice));
+
+    // Allocate arrays for the pointers
+    float** Aarray = new float*[batchSize];
+    float** Barray = new float*[batchSize];
+    float** Carray = new float*[batchSize];
+
+    for (int i = 0; i < batchSize; ++i) {
+        Aarray[i] = d_A + i * m * k;
+        Barray[i] = d_B + i * k * n;
+        Carray[i] = d_C + i * m * n;
+    }
+
+    float** d_Aarray;
+    float** d_Barray;
+    float** d_Carray;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_Aarray, batchSize * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_Barray, batchSize * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_Carray, batchSize * sizeof(float*)));
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_Aarray, Aarray, batchSize * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_Barray, Barray, batchSize * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_Carray, Carray, batchSize * sizeof(float*), cudaMemcpyHostToDevice));
+
+    // Transpose A and B
+    CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle, CUBLAS_OP_T, CUBLAS_OP_T, m, n, k,
+                                          &alpha, (const float**)d_Aarray, k,
+                                          (const float**)d_Barray, n,
+                                          &beta, d_Carray, m, batchSize));
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_C, d_C, batchSize * m * n * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Free dynamically allocated arrays
+    delete[] Aarray;
+    delete[] Barray;
+    delete[] Carray;
+
+    CHECK_CUDA_ERROR(cudaFree(d_A));
+    CHECK_CUDA_ERROR(cudaFree(d_B));
+    CHECK_CUDA_ERROR(cudaFree(d_C));
+    CHECK_CUDA_ERROR(cudaFree(d_Aarray));
+    CHECK_CUDA_ERROR(cudaFree(d_Barray));
+    CHECK_CUDA_ERROR(cudaFree(d_Carray));
+}
+
+void tensorMultiply(const float* h_A, const float* h_B, float* h_C, int batchSize, int m, int n, int k) {
+    const float alpha = 1.0f;
+    const float beta = 0.0f;
+
+    float *d_A, *d_B, *d_C;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_A, batchSize * m * k * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_B, batchSize * k * n * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_C, batchSize * m * n * sizeof(float)));
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_A, h_A, batchSize * m * k * sizeof(float), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_B, h_B, batchSize * k * n * sizeof(float), cudaMemcpyHostToDevice));
+
+    // Allocate arrays for the pointers
+    float** Aarray = new float*[batchSize];
+    float** Barray = new float*[batchSize];
+    float** Carray = new float*[batchSize];
+
+    for (int i = 0; i < batchSize; ++i) {
+        Aarray[i] = d_A + i * m * k;
+        Barray[i] = d_B + i * k * n;
+        Carray[i] = d_C + i * m * n;
+    }
+
+    float** d_Aarray;
+    float** d_Barray;
+    float** d_Carray;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_Aarray, batchSize * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_Barray, batchSize * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&d_Carray, batchSize * sizeof(float*)));
+
+    CHECK_CUDA_ERROR(cudaMemcpy(d_Aarray, Aarray, batchSize * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_Barray, Barray, batchSize * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(d_Carray, Carray, batchSize * sizeof(float*), cudaMemcpyHostToDevice));
+
+    CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k,
+                                          &alpha, (const float**)d_Aarray, m,
+                                          (const float**)d_Barray, k,
+                                          &beta, d_Carray, m, batchSize));
+
+    CHECK_CUDA_ERROR(cudaMemcpy(h_C, d_C, batchSize * m * n * sizeof(float), cudaMemcpyDeviceToHost));
+
+    // Free dynamically allocated arrays
+    delete[] Aarray;
+    delete[] Barray;
+    delete[] Carray;
+
+    CHECK_CUDA_ERROR(cudaFree(d_A));
+    CHECK_CUDA_ERROR(cudaFree(d_B));
+    CHECK_CUDA_ERROR(cudaFree(d_C));
+    CHECK_CUDA_ERROR(cudaFree(d_Aarray));
+    CHECK_CUDA_ERROR(cudaFree(d_Barray));
+    CHECK_CUDA_ERROR(cudaFree(d_Carray));
+}
+
 // CUDA kernel to add the bias vector to the activation matrix
 __global__ void add_bias(float* A, float* B, int rows, int cols) {
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -189,7 +298,7 @@ __global__ void compute_dC_dA2(float* gpu_dC_dA2, float *gpu_A2, float *gpu_Y, i
         // Using cross-entropy loss function
         // gpu_dC_dA2[idx] = -gpu_Y[col_T * rows_T + row_T] / gpu_A2[col_T * rows_T + row_T];
 
-        // Using mean-square error
+        // Using mean-square error loss function
         gpu_dC_dA2[idx] = gpu_A2[col_T * rows_T + row_T] - gpu_Y[col_T * rows_T + row_T];
     }
 }
@@ -237,6 +346,7 @@ __global__ void compute_dZ_dW(float* gpu_dZ_dW, float *gpu_A, int rows, int cols
         int col = idx % cols; // j
         int row = idx % rows; // i
         float a_i = gpu_A[slice * (cols / rows) + (col / rows)];
+        // printf("idx %d slice %d col %d row %d a_i %f\n", idx, slice, col, row, a_i);
         gpu_dZ_dW[slice * rows * cols + col * rows + row] = a_i;
     }
 }
@@ -405,6 +515,13 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
 
     // Copy data from CPU to GPU
     CHECK_CUDA_ERROR(cudaMemcpy(gpu_dZ2_dA1, W2, OUTPUT_SIZE * L1_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+
+    if (DEBUG_MODE) {
+        cout << "PRINTING dZ2/dA1 for a single sample " << endl;
+        float dZ2_dA1[OUTPUT_SIZE * L1_SIZE];
+        CHECK_CUDA_ERROR(cudaMemcpy(dZ2_dA1, gpu_dZ2_dA1, OUTPUT_SIZE * L1_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+        printMatrix(dZ2_dA1, OUTPUT_SIZE, L1_SIZE);
+    }
     
     // Compute dA1/dZ1 nx100x100
 
@@ -417,6 +534,13 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
     CHECK_CUDA_ERROR(cudaGetLastError());
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
+    if (DEBUG_MODE) {
+        cout << "PRINTING dA1/dZ1 for a single sample " << endl;
+        float dA1_dZ1[L1_SIZE * L1_SIZE];
+        CHECK_CUDA_ERROR(cudaMemcpy(dA1_dZ1, gpu_dA1_dZ1, L1_SIZE * L1_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+        printMatrix(dA1_dZ1, L1_SIZE, L1_SIZE);
+    }
+
     // Compute dZ2/dZ1 nx10x100
     // dZ2/dZ1 = dZ2/dA1 * dA1/dZ1
 
@@ -425,6 +549,13 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
                                           &ALPHA, (const float**)gpu_dZ2_dA1_array, OUTPUT_SIZE,
                                           (const float**)gpu_dA1_dZ1_array, L1_SIZE,
                                           &BETA, gpu_dZ2_dZ1_array, OUTPUT_SIZE, BATCH_SIZE));
+
+    if (DEBUG_MODE) {
+        cout << "PRINTING dZ2/dZ1 for a single sample " << endl;
+        float dZ2_dZ1[OUTPUT_SIZE * L1_SIZE];
+        CHECK_CUDA_ERROR(cudaMemcpy(dZ2_dZ1, gpu_dZ2_dZ1, OUTPUT_SIZE * L1_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+        printMatrix(dZ2_dZ1, L1_SIZE, L1_SIZE);
+    }
 
     // Now gpu_dZ2_dZ1 stores the local error of layer 1
 
@@ -437,6 +568,11 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
     // So dC/dB2 = dC/dZ2 = L2_error
 
     CHECK_CUDA_ERROR(cudaMemcpy(dC_dB2, gpu_dC_dZ2, BATCH_SIZE * 1 * (OUTPUT_SIZE * 1) * sizeof(float), cudaMemcpyDeviceToHost));
+
+    if (DEBUG_MODE) {
+        cout << "PRINTING dC/dB2 for a single sample " << endl;
+        printMatrix(dC_dB2, OUTPUT_SIZE, 1);
+    }
 
     // Compute dC/dW2 nx1x(10x100)
     // dC/dW2 = dC/dZ2 * dZ2/dW2 = L2_error * dZ2/dW2
@@ -452,6 +588,13 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
     CHECK_CUDA_ERROR(cudaGetLastError());
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
+    if (DEBUG_MODE) {
+        cout << "PRINTING dZ2/dW2 for a single sample " << endl;
+        float dZ2_dW2[OUTPUT_SIZE * OUTPUT_SIZE * L1_SIZE];
+        CHECK_CUDA_ERROR(cudaMemcpy(dZ2_dW2, gpu_dZ2_dW2, OUTPUT_SIZE * OUTPUT_SIZE * L1_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+        printMatrix(dZ2_dW2, OUTPUT_SIZE, OUTPUT_SIZE * L1_SIZE);
+    }
+
     // Now we can compute dC/dW2 nx1x(10x100)
     // dC/dW2 = dC/dZ2 * dZ2/dW2 = L2_error * dZ2/dW2
 
@@ -462,6 +605,11 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
                                           &BETA, gpu_dC_dW2_array, 1, BATCH_SIZE));
 
     CHECK_CUDA_ERROR(cudaMemcpy(dC_dW2, gpu_dC_dW2, BATCH_SIZE * 1 * (OUTPUT_SIZE * L1_SIZE) * sizeof(float), cudaMemcpyDeviceToHost));
+
+    if (DEBUG_MODE) {
+        cout << "PRINTING dC/dW2 for a single sample " << endl;
+        printMatrix(dC_dW2, OUTPUT_SIZE, L1_SIZE);
+    }
 
     // Compute dC/dB1 nx1x(100x1)
     // dC/dB1 = dC/dZ2 * dZ2/dZ1 * dZ1/dB1 = L2_error * L1_error * dZ1/dB1
@@ -479,6 +627,11 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
 
     CHECK_CUDA_ERROR(cudaMemcpy(dC_dB1, gpu_dC_dB1, BATCH_SIZE * 1 * (L1_SIZE * 1) * sizeof(float), cudaMemcpyDeviceToHost));
 
+    if (DEBUG_MODE) {
+        cout << "PRINTING dC/dB1 for a single sample " << endl;
+        printMatrix(dC_dB1, L1_SIZE, 1);
+    }
+
     // Compute dC/dW1 nx1x(100x784)
     // dC/dW1 = dC/dZ2 * dZ2/dZ1 * dZ1/dW1 = L2_error * L1_error * dZ1/dW1 = dC/dB1 * dZ1/dW1
     // Can be optimized to use dC/dB1 without deallocating and reallocating
@@ -494,6 +647,13 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
     CHECK_CUDA_ERROR(cudaGetLastError());
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
     
+    if (DEBUG_MODE) {
+        cout << "PRINTING dZ1/dW1 for a single sample " << endl;
+        float dZ1_dW1[L1_SIZE * L1_SIZE * INPUT_SIZE];
+        CHECK_CUDA_ERROR(cudaMemcpy(dZ1_dW1, gpu_dZ1_dW1, L1_SIZE * L1_SIZE * INPUT_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+        printMatrix(dZ1_dW1, L1_SIZE, L1_SIZE * INPUT_SIZE);
+    }
+
     // Now we can compute dC/dW1 nx1x(100x784)
     // dC/dW1 = dC/dZ2 * dZ2/dZ1 * dZ1/dW1 = L2_error * L1_error * dZ1/dW1 = dC/dB1 * dZ1/dW1
     // Can be optimized to use dC/dB1 without deallocating and reallocating
@@ -505,6 +665,11 @@ void back_prop(float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (
                                           &BETA, gpu_dC_dW1_array, 1, BATCH_SIZE));
 
     CHECK_CUDA_ERROR(cudaMemcpy(dC_dW1, gpu_dC_dW1, BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE) * sizeof(float), cudaMemcpyDeviceToHost));
+
+    if (DEBUG_MODE) {
+        cout << "PRINTING dC/dW1 for a single sample " << endl;
+        printMatrix(dC_dW1, L1_SIZE, INPUT_SIZE);
+    }
 }
 
 void update_params(float (&W1)[L1_SIZE * INPUT_SIZE], float (&B1)[L1_SIZE], float (&W2)[OUTPUT_SIZE * L1_SIZE], float (&B2)[OUTPUT_SIZE], float (&dC_dW1)[BATCH_SIZE * 1 * (L1_SIZE * INPUT_SIZE)], float (&dC_dB1)[BATCH_SIZE * 1 * (L1_SIZE * 1)], float (&dC_dW2)[BATCH_SIZE * 1 * (OUTPUT_SIZE * L1_SIZE)], float (&dC_dB2)[BATCH_SIZE * 1 * (OUTPUT_SIZE * 1)]) {
