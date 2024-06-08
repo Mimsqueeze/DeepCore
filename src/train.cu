@@ -1,5 +1,6 @@
 #include <fstream>
 #include <iostream>
+#include <string>
 #include <random>
 #include <chrono>
 #include <cublas_v2.h>
@@ -15,7 +16,7 @@
 
 #define LABEL_START 8
 #define IMAGE_START 16
-#define BATCH_SIZE 64
+#define BATCH_SIZE 50
 
 #define NUM_TRAIN_IMAGES 60000
 #define NUM_BATCHES (NUM_TRAIN_IMAGES/BATCH_SIZE)
@@ -24,11 +25,15 @@
 #define NUM_EPOCHS 100
 
 #define INPUT_SIZE 784
-#define L1_SIZE 400
+#define L1_SIZE 600
 #define OUTPUT_SIZE 10
 
 #define BLOCK_SIZE 256
+
+#define SAVE_WEIGHTS_AND_BIASES true
 #define PRINT_BATCH_AND_PREDICTIONS false
+
+#define WEIGHTS_AND_BIASES_DIR R"(.\src\models\)"
 
 #define CHECK_CUDA_ERROR(err) { \
     if (err != cudaSuccess) { \
@@ -39,7 +44,7 @@
 
 #define CHECK_CUBLAS_ERROR(err) { \
     if (err != CUBLAS_STATUS_SUCCESS) { \
-        std::cerr << "cuBLAS error: " << _cudaGetErrorEnum(err) << std::endl; \
+        std::cerr << "cuBLAS error: " << _cudaGetErrorEnum(err) << " at line " << __LINE__ << std::endl; \
         exit(EXIT_FAILURE); \
     } \
 }
@@ -486,7 +491,7 @@ void update_params(float *gpu_W1, float *gpu_B1, float *gpu_W2, float *gpu_B2,
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 }
 
-void get_label_batch(float (&Y)[OUTPUT_SIZE * BATCH_SIZE], const int offsets[NUM_TRAIN_IMAGES], int index, string path) {
+void get_label_batch(float (&Y)[OUTPUT_SIZE * BATCH_SIZE], const int *offsets, int index, string path) {
     ifstream labels_file(path, ios::in | ios::binary);
     if (labels_file.is_open()) {
         for (int i = 0; i < BATCH_SIZE; i++) {
@@ -508,7 +513,7 @@ void get_label_batch(float (&Y)[OUTPUT_SIZE * BATCH_SIZE], const int offsets[NUM
     }
 }
 
-void get_image_batch(float (&X)[INPUT_SIZE * BATCH_SIZE], const int offsets[NUM_TRAIN_IMAGES], int index, string path) {
+void get_image_batch(float (&X)[INPUT_SIZE * BATCH_SIZE], const int *offsets, int index, string path) {
     ifstream images_file(path, ios::in | ios::binary);
     if (images_file.is_open()) {
         for (int i = 0; i < BATCH_SIZE; i++) {
@@ -741,14 +746,58 @@ void xavier_init(float *gpu_W, int m, int n) {
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 }
 
+streamoff save(float *gpu_X, int rows, int cols, streamoff position, const string &path) {
+    // Declare file
+    ofstream file;
+
+    // Open file
+    if (position == 0) {
+        file = ofstream(path, ios::out | ios::binary);
+    } else {
+        file = ofstream(path, ios::app | ios::binary);
+    }
+
+    // Allocate memory on CPU
+    float *X = new float[rows * cols];
+
+    // Copy memory from GPU to CPU
+    CHECK_CUDA_ERROR(cudaMemcpy(X, gpu_X, rows * cols * sizeof(float), cudaMemcpyDeviceToHost));
+
+
+    if (file.is_open()) {
+        // Save matrix X into the offset position
+        file.seekp(position);
+        for (int j = 0; j < cols; j++) {
+            for (int i = 0; i < rows; i++) {
+                file.write((char *) &X[j * rows + i], sizeof(float));
+            }
+        }
+        // Save the resulting position
+        position = file.tellp();
+    
+
+        // Close the file
+        file.close();
+    } else {
+        cerr << "ERROR: FAILED TO OPEN FILE " << path;
+        exit(1);
+    }
+
+
+    // Free CPU memory
+    delete[] X;
+
+    return position;
+}
+
 int main() {
     // Initialize cuBLAS handle
     cublasCreate(&HANDLE);
 
     // Declare GPU memory
     float *gpu_W1;
-    float *gpu_W2;
     float *gpu_B1;
+    float *gpu_W2;
     float *gpu_B2;
     float *gpu_test_X;
     float *gpu_test_Y;
@@ -757,8 +806,8 @@ int main() {
 
     // Allocate GPU memory
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_W1, L1_SIZE * INPUT_SIZE * sizeof(float)));
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_W2, OUTPUT_SIZE * L1_SIZE * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B1, L1_SIZE * 1 * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_W2, OUTPUT_SIZE * L1_SIZE * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B2, OUTPUT_SIZE * 1 * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_test_X, INPUT_SIZE * BATCH_SIZE * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_test_Y, OUTPUT_SIZE * BATCH_SIZE * sizeof(float)));
@@ -845,12 +894,22 @@ int main() {
         cout << endl;
     }
 
-    cout << "Finished training." << endl;
-    
+    cout << "FINISHED TRAINING." << endl;
+
+    if (SAVE_WEIGHTS_AND_BIASES) {
+        cout << "SAVING WEIGHTS AND BIASES TO FILE...\n";
+        streamoff write_position = 0;
+        string path = WEIGHTS_AND_BIASES_DIR + to_string(INPUT_SIZE) + "-" + to_string(L1_SIZE) + "-" + to_string(OUTPUT_SIZE) + ".bin";
+        write_position = save(gpu_W1, L1_SIZE, INPUT_SIZE, write_position, path);
+        write_position = save(gpu_B1, L1_SIZE, 1, write_position, path);
+        write_position = save(gpu_W2, OUTPUT_SIZE, L1_SIZE, write_position, path);
+        save(gpu_B2, OUTPUT_SIZE, 1, write_position, path);
+    }
+
     // Free GPU memory
     CHECK_CUDA_ERROR(cudaFree(gpu_W1));
-    CHECK_CUDA_ERROR(cudaFree(gpu_W2));
     CHECK_CUDA_ERROR(cudaFree(gpu_B1));
+    CHECK_CUDA_ERROR(cudaFree(gpu_W2));
     CHECK_CUDA_ERROR(cudaFree(gpu_B2));
     CHECK_CUDA_ERROR(cudaFree(gpu_test_X));
     CHECK_CUDA_ERROR(cudaFree(gpu_test_Y));
