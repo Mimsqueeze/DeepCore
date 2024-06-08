@@ -1,20 +1,20 @@
 CC= nvcc
 CFLAGS= -g -G -O3 -lcublas
 
-main: src/main.cu
-	$(CC) $(CFLAGS) src/main.cu -o src/main.exe
-	src/main.exe
+train: src/train.cu
+	$(CC) $(CFLAGS) src/train.cu -o src/train.exe
+	src/train.exe
 
 eval: src/eval.cu
 	$(CC) $(CFLAGS) src/eval.cu -o src/eval.exe
 	src/eval.exe
 
-maindebug: src/main.cu
-	$(CC) $(CFLAGS) src/main.cu -o src/main.exe
-	compute-sanitizer --tool memcheck src/main.exe
-	compute-sanitizer --tool racecheck src/main.exe
-	compute-sanitizer --tool initcheck src/main.exe
-	compute-sanitizer --tool synccheck src/main.exe
+traindebug: src/train.cu
+	$(CC) $(CFLAGS) src/train.cu -o src/train.exe
+	compute-sanitizer --tool memcheck src/train.exe
+	compute-sanitizer --tool racecheck src/train.exe
+	compute-sanitizer --tool initcheck src/train.exe
+	compute-sanitizer --tool synccheck src/train.exe
 
 test: test/test.cu
 	$(CC) $(CFLAGS) test/test.cu -o test/test.exe

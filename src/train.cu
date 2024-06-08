@@ -15,7 +15,7 @@
 
 #define LABEL_START 8
 #define IMAGE_START 16
-#define BATCH_SIZE 1
+#define BATCH_SIZE 32
 
 #define NUM_TRAIN_IMAGES 60000
 #define NUM_BATCHES (NUM_TRAIN_IMAGES/BATCH_SIZE)
@@ -29,8 +29,6 @@
 
 #define BLOCK_SIZE 256
 #define DEBUG_MODE true
-
-#define WEIGHTS_AND_BIASES_FILE_PATH R"(.\src\models\wandb.bin)"
 
 #define CHECK_CUDA_ERROR(err) { \
     if (err != cudaSuccess) { \
@@ -76,78 +74,78 @@ const unsigned SEED = chrono::system_clock::now().time_since_epoch().count();
 const float ALPHA = 1.0f;
 const float BETA = 0.0f;
 
-void multiply_tensor_T(float *gpu_A, float *gpu_B, float *gpu_C, int batch_size, int m, int n, int k) {
+void multiply_tensor_T(float *gpu_result, float *gpu_A, float *gpu_B, int slices, int m, int n, int k) {
     // Allocate arrays for the pointers
-    float** A_array = new float*[batch_size];
-    float** B_array = new float*[batch_size];
-    float** C_array = new float*[batch_size];
+    float** A_array = new float*[slices];
+    float** B_array = new float*[slices];
+    float** result_array = new float*[slices];
 
-    for (int i = 0; i < batch_size; ++i) {
+    for (int i = 0; i < slices; ++i) {
         A_array[i] = gpu_A + i * m * k;
         B_array[i] = gpu_B + i * k * n;
-        C_array[i] = gpu_C + i * m * n;
+        result_array[i] = gpu_result + i * m * n;
     }
 
     float** gpu_A_array;
     float** gpu_B_array;
     float** gpu_C_array;
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A_array, batch_size * sizeof(float*)));
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B_array, batch_size * sizeof(float*)));
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_C_array, batch_size * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A_array, slices * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B_array, slices * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_C_array, slices * sizeof(float*)));
 
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A_array, A_array, batch_size * sizeof(float*), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B_array, B_array, batch_size * sizeof(float*), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_C_array, C_array, batch_size * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A_array, A_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B_array, B_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_C_array, result_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
 
     // Transpose A and B
     CHECK_CUBLAS_ERROR(cublasSgemmBatched(HANDLE, CUBLAS_OP_T, CUBLAS_OP_T, m, n, k,
                                           &ALPHA, (const float**)gpu_A_array, k,
                                           (const float**)gpu_B_array, n,
-                                          &BETA, gpu_C_array, m, batch_size));
+                                          &BETA, gpu_C_array, m, slices));
 
     // Free dynamically allocated arrays
     delete[] A_array;
     delete[] B_array;
-    delete[] C_array;
+    delete[] result_array;
 
     CHECK_CUDA_ERROR(cudaFree(gpu_A_array));
     CHECK_CUDA_ERROR(cudaFree(gpu_B_array));
     CHECK_CUDA_ERROR(cudaFree(gpu_C_array));
 }
 
-void multiply_tensor(float *gpu_A, float *gpu_B, float *gpu_C, int batch_size, int m, int n, int k) {
+void multiply_tensor(float *gpu_result, float *gpu_A, float *gpu_B, int slices, int m, int n, int k) {
     // Allocate arrays for the pointers
-    float** A_array = new float*[batch_size]{0};
-    float** B_array = new float*[batch_size]{0};
-    float** C_array = new float*[batch_size]{0};
+    float** A_array = new float*[slices]{0};
+    float** B_array = new float*[slices]{0};
+    float** result_array = new float*[slices]{0};
 
-    for (int i = 0; i < batch_size; ++i) {
+    for (int i = 0; i < slices; ++i) {
         A_array[i] = gpu_A + i * m * k;
         B_array[i] = gpu_B + i * k * n;
-        C_array[i] = gpu_C + i * m * n;
+        result_array[i] = gpu_result + i * m * n;
     }
 
     float** gpu_A_array;
     float** gpu_B_array;
     float** gpu_C_array;
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A_array, batch_size * sizeof(float*)));
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B_array, batch_size * sizeof(float*)));
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_C_array, batch_size * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A_array, slices * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B_array, slices * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_C_array, slices * sizeof(float*)));
 
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A_array, A_array, batch_size * sizeof(float*), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B_array, B_array, batch_size * sizeof(float*), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_C_array, C_array, batch_size * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A_array, A_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B_array, B_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_C_array, result_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
 
     // Perform batched matrix multiplication
     CHECK_CUBLAS_ERROR(cublasSgemmBatched(HANDLE, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k,
                                           &ALPHA, (const float**)gpu_A_array, m,
                                           (const float**)gpu_B_array, k,
-                                          &BETA, gpu_C_array, m, batch_size));
+                                          &BETA, gpu_C_array, m, slices));
 
     // Free dynamically allocated arrays
     delete[] A_array;
     delete[] B_array;
-    delete[] C_array;
+    delete[] result_array;
 
     CHECK_CUDA_ERROR(cudaFree(gpu_A_array));
     CHECK_CUDA_ERROR(cudaFree(gpu_B_array));
@@ -229,39 +227,95 @@ void apply_softmax(float *gpu_A, int rows, int cols) {
     CHECK_CUDA_ERROR(cudaFree(gpu_NORM));
 }
 
-// // CUDA kernel to compute the dC/dA2 Jacobian
-// __global__ void compute_dC_dA2(float *gpu_dC_dA2, float *gpu_A2, float *gpu_Y, int rows, int cols) {
-//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-//     int totalElements = rows * cols;
-//     if (idx < totalElements) {
-//         int col = idx / rows; // j
-//         int row = idx % rows; // i
-//         int col_T = row;
-//         int row_T = col;
-//         int rows_T = cols;
-//         // Using cross-entropy loss function
-//         // gpu_dC_dA2[idx] = -gpu_Y[col_T * rows_T + row_T] / gpu_A2[col_T * rows_T + row_T];
+// CUDA kernel to compute the dC/dA2 Jacobian
+__global__ void compute_dC_dA2_kernel(float *gpu_dC_dA2, float *gpu_A2, float *gpu_Y, int slices, int rows, int cols) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = slices * rows * cols;
+    if (idx < totalElements) {
+        int slice = idx / (rows * cols); // k
+        int col = (idx / rows) % cols; // j
 
-//         // Using mean-square error loss function
-//         gpu_dC_dA2[idx] = gpu_A2[col_T * rows_T + row_T] - gpu_Y[col_T * rows_T + row_T];
-//     }
-// }
+        // Using cross-entropy loss function
+        // gpu_dC_dA2[idx] = -gpu_Y[slice * cols + col] / gpu_A2[slice * cols + col];
 
+        // Using mean-square error loss function
+        gpu_dC_dA2[idx] = gpu_A2[slice * cols + col] - gpu_Y[slice * cols + col];
+    }
+}
 
+void compute_dC_dA2(float *gpu_dC_dA2, float *gpu_A2, float *gpu_Y, int slices, int rows, int cols) {
+    int num_blocks = (slices * rows * cols + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    compute_dC_dA2_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_dC_dA2, gpu_A2, gpu_Y, slices, rows, cols);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
 
-// // CUDA kernel to update params in gpu_P
-// __global__ void subtract_derivs(float *gpu_P, float *gpu_dP, float learning_rate, int rows, int cols, int slices) {
-//     int idx = blockIdx.x * blockDim.x + threadIdx.x;
-//     int totalElements = rows * cols;
-//     if (idx < totalElements) { // let's just use a loop here
-//         float avg_deriv = 0;
-//         for (int slice = 0; slice < slices; slice++) {
-//             avg_deriv += gpu_dP[idx + (slice * rows * cols)];
-//         }
-//         avg_deriv /= slices;
-//         gpu_P[idx] = gpu_P[idx] - learning_rate * avg_deriv;
-//     }
-// }
+__global__ void compute_dA2_dZ2_kernel(float* gpu_dA2_dZ2, float *gpu_A2, int slices, int rows, int cols) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = slices * rows * cols;
+    if (idx < totalElements) {
+        int slice = idx / (rows * cols); // k
+        int col = (idx / rows) % cols; // j
+        int row = idx % rows; // i
+        float a_i = gpu_A2[slice * rows + row];
+        float a_j = gpu_A2[slice * rows + col];
+        if (row == col) {
+            gpu_dA2_dZ2[idx] = a_i * (1.0f - a_j);
+        } else {
+            gpu_dA2_dZ2[idx] = a_i * (-a_j);
+        }
+    }
+}
+
+void compute_dA2_dZ2(float* gpu_dA2_dZ2, float *gpu_A2, int slices, int rows, int cols) {
+    int num_blocks = (slices * rows * cols + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    compute_dA2_dZ2_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_dA2_dZ2, gpu_A2, slices, rows, cols);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
+void compute_dZ2_dA1(float* gpu_dZ2_dA1, float *gpu_W2, int slices, int rows, int cols) {
+    for (int slice = 0; slice < slices; slice++) {
+        CHECK_CUDA_ERROR(cudaMemcpy(gpu_dZ2_dA1 + slice * rows * cols, gpu_W2, rows * cols * sizeof(float), cudaMemcpyDeviceToDevice));
+    }
+}
+
+// CUDA kernel to compute the dA1/dZ1 Jacobian
+__global__ void compute_dA1_dZ1_kernel(float* gpu_dA1_dZ1, float *gpu_A1, int slices, int rows, int cols) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = slices * rows * cols;
+    if (idx < totalElements) {
+        int slice = idx / (rows * cols); // k
+        int col = (idx / rows) % cols; // j
+        int row = idx % rows; // i
+        if (col == row && gpu_A1[slice * rows + row] > 0) {
+            gpu_dA1_dZ1[idx] = 1;
+        } else {
+            gpu_dA1_dZ1 = 0;
+        }
+    }
+}
+
+void compute_dA1_dZ1(float* gpu_dA1_dZ1, float *gpu_A1, int slices, int rows, int cols) {
+    int num_blocks = (slices * rows * cols + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    compute_dA1_dZ1_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_dA1_dZ1, gpu_A1, BATCH_SIZE, L1_SIZE, L1_SIZE);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
+// CUDA kernel to update params in gpu_P
+__global__ void update_params_kernel(float *gpu_P, float *gpu_dP, float learning_rate, int rows, int cols, int slices) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = rows * cols;
+    if (idx < totalElements) { // let's just use a loop here
+        float avg_deriv = 0;
+        for (int slice = 0; slice < slices; slice++) {
+            avg_deriv += gpu_dP[idx + (slice * rows * cols)];
+        }
+        avg_deriv /= slices;
+        gpu_P[idx] = gpu_P[idx] - learning_rate * avg_deriv;
+    }
+}
 
 // Function to print a tensor
 void print_tensor(string name, const float *gpu_tensor, int slices, int rows, int cols) {
@@ -287,7 +341,7 @@ void print_tensor(string name, const float *gpu_tensor, int slices, int rows, in
 void forward_prop(float *gpu_X, float *gpu_A1, float *gpu_A2, float *gpu_W1, float *gpu_B1, float *gpu_W2, float *gpu_B2) {
 
     // Perform A1 = W1*X
-    multiply_tensor(gpu_W1, gpu_X, gpu_A1, 1, L1_SIZE, BATCH_SIZE, INPUT_SIZE);
+    multiply_tensor(gpu_A1, gpu_W1, gpu_X, 1, L1_SIZE, BATCH_SIZE, INPUT_SIZE);
 
     // Perform A1 = A1 + B1
     add_bias(gpu_A1, gpu_B1, L1_SIZE, BATCH_SIZE);
@@ -296,13 +350,140 @@ void forward_prop(float *gpu_X, float *gpu_A1, float *gpu_A2, float *gpu_W1, flo
     apply_ReLU(gpu_A1, L1_SIZE, BATCH_SIZE);
 
     // Perform A2 = W2*A1
-    multiply_tensor(gpu_W2, gpu_A1, gpu_A2, 1, OUTPUT_SIZE, BATCH_SIZE, L1_SIZE);
+    multiply_tensor(gpu_A2, gpu_W2, gpu_A1, 1, OUTPUT_SIZE, BATCH_SIZE, L1_SIZE);
 
     // Perform A2 = A2 + B2
     add_bias(gpu_A2, gpu_B2, OUTPUT_SIZE, BATCH_SIZE);
 
     // Perform A2 = softmax(A2)
     apply_softmax(gpu_A2, OUTPUT_SIZE, BATCH_SIZE);
+}
+
+void back_prop(float *gpu_dC_dW1, float *gpu_dC_dB1, float *gpu_dC_dW2, float *gpu_dC_dB2, 
+               float *gpu_X, float *gpu_Y, float *gpu_A1, float *gpu_A2, float *gpu_W1, float *gpu_W2) {
+
+    // Declare GPU memory
+    float *gpu_dC_dA2;
+    float *gpu_dA2_dZ2;
+    float *gpu_dC_dZ2; // layer 2 local error
+
+    float *gpu_dZ2_dA1;
+    float *gpu_dA1_dZ1;
+    float *gpu_dZ2_dZ1; // layer 1 local error
+
+    float *gpu_dC_dZ1; // layer 1 and level 2 accumulated error
+
+    // Allocate GPU memory
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dA2, BATCH_SIZE * 1 * OUTPUT_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dA2_dZ2, BATCH_SIZE * OUTPUT_SIZE * OUTPUT_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dZ2, BATCH_SIZE * 1 * OUTPUT_SIZE * sizeof(float)));
+
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ2_dA1, BATCH_SIZE * OUTPUT_SIZE * L1_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dA1_dZ1, BATCH_SIZE * L1_SIZE * L1_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ2_dZ1, BATCH_SIZE * OUTPUT_SIZE * L1_SIZE * sizeof(float)));
+
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dZ1, BATCH_SIZE * 1 * L1_SIZE * sizeof(float)));
+
+    // print_tensor("Y", gpu_Y, 1, OUTPUT_SIZE, BATCH_SIZE);
+    // print_tensor("A2", gpu_A2, 1, OUTPUT_SIZE, BATCH_SIZE);
+
+    // Compute dC/dA2 (nx1x10)
+    compute_dC_dA2(gpu_dC_dA2, gpu_A2, gpu_Y, BATCH_SIZE, 1, OUTPUT_SIZE);
+
+    // print_tensor("dC/dA2", gpu_dC_dA2, BATCH_SIZE, 1, OUTPUT_SIZE);
+
+    // Compute dA2/dZ2 (nx10x10)
+    compute_dA2_dZ2(gpu_dA2_dZ2, gpu_A2, BATCH_SIZE, OUTPUT_SIZE, OUTPUT_SIZE);
+
+    // print_tensor("dA2/dZ2", gpu_dA2_dZ2, BATCH_SIZE, OUTPUT_SIZE, OUTPUT_SIZE);
+
+    // Compute layer 2 local error dC/dZ2 (nx1x10)
+    // dC/dZ2 = dC/dA2 * dA2/dZ2
+    multiply_tensor(gpu_dC_dZ2, gpu_dC_dA2, gpu_dA2_dZ2, BATCH_SIZE, 1, OUTPUT_SIZE, OUTPUT_SIZE);
+
+    // print_tensor("dC/dZ2", gpu_dC_dZ2, BATCH_SIZE, 1, OUTPUT_SIZE);
+
+    // Compute dZ2/dA1 (nx10x100)
+    // It's just n times the weight matrix!
+    compute_dZ2_dA1(gpu_dZ2_dA1, gpu_W2, BATCH_SIZE, OUTPUT_SIZE, L1_SIZE);
+
+    // print_tensor("W2", gpu_W2, 1, OUTPUT_SIZE, L1_SIZE);
+
+    // print_tensor("dZ2/dA1", gpu_dZ2_dA1, BATCH_SIZE, OUTPUT_SIZE, L1_SIZE);
+
+    // Compute dA1/dZ1 (nx100x100)
+    compute_dA1_dZ1(gpu_dA1_dZ1, gpu_A1, BATCH_SIZE, L1_SIZE, L1_SIZE);
+
+    // print_tensor("A1", gpu_A1, 1, L1_SIZE, BATCH_SIZE);
+
+    // print_tensor("dA1/dZ1", gpu_dA1_dZ1, BATCH_SIZE, L1_SIZE, L1_SIZE);
+
+    // Compute layer 1 local error dZ2/dZ1 (nx10x100)
+    // dZ2/dZ1 = dZ2/dA1 * dA1/dZ1
+    multiply_tensor(gpu_dZ2_dZ1, gpu_dZ2_dA1, gpu_dA1_dZ1, BATCH_SIZE, OUTPUT_SIZE, L1_SIZE, L1_SIZE);
+    // print_tensor("dZ2/dZ1", gpu_dZ2_dZ1, BATCH_SIZE, OUTPUT_SIZE, L1_SIZE);
+
+    // Compute layer 1 and level 2 accumulated error dC/dZ1 (nx1x100)
+    multiply_tensor(gpu_dC_dZ1, gpu_dC_dZ2, gpu_dZ2_dZ1, BATCH_SIZE, 1, L1_SIZE, OUTPUT_SIZE);
+    // print_tensor("dC/dZ1", gpu_dC_dZ1, BATCH_SIZE, 1, L1_SIZE);
+
+    // Compute dC/dW2 (nx10x100)
+    // Use shortcut: dC/dW2 = transpose(dC/dZ2) * transpose(A1)
+    multiply_tensor_T(gpu_dC_dW2, gpu_dC_dZ2, gpu_A1, BATCH_SIZE, OUTPUT_SIZE, L1_SIZE, 1); // possible error source
+    // print_tensor("dC/dW2", gpu_dC_dW2, BATCH_SIZE, OUTPUT_SIZE, L1_SIZE);
+
+    // Compute dC/dB2 (nx1x10)
+    // Use shortcut: dC/dB2 = dC/dZ2
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_dC_dB2, gpu_dC_dZ2, BATCH_SIZE * 1 * OUTPUT_SIZE * sizeof(float), cudaMemcpyDeviceToDevice));
+    // print_tensor("dC/dB2", gpu_dC_dB2, BATCH_SIZE, 1, OUTPUT_SIZE);
+
+    // Compute dC/dW1 (nx100x784)
+    // Use shortcut: dC/dW1 = transpose(dC/dZ1) * transpose(X)
+    multiply_tensor_T(gpu_dC_dW1, gpu_dC_dZ1, gpu_X, BATCH_SIZE, L1_SIZE, INPUT_SIZE, 1); // possible error source
+    // print_tensor("dC/dW1", gpu_dC_dW1, BATCH_SIZE, L1_SIZE, INPUT_SIZE);
+
+    // Compute dC/dB1 (nx1x100)
+    // Use shortcut: dC/dB1 = dC/dZ1
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_dC_dB1, gpu_dC_dZ1, BATCH_SIZE * 1 * L1_SIZE * sizeof(float), cudaMemcpyDeviceToDevice));
+    // print_tensor("dC/dB1", gpu_dC_dB1, BATCH_SIZE, 1, L1_SIZE);
+
+    // Free GPU memory
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dA2));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dA2_dZ2));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dZ2));
+
+    CHECK_CUDA_ERROR(cudaFree(gpu_dZ2_dA1));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dA1_dZ1));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dZ2_dZ1));
+
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dZ1));
+}
+
+void update_params(float *gpu_W1, float *gpu_B1, float *gpu_W2, float *gpu_B2, 
+                   float *gpu_dC_dW1, float *gpu_dC_dB1, float *gpu_dC_dW2, float *gpu_dC_dB2) {
+    // Launch CUDA kernel
+    int num_blocks = (L1_SIZE * INPUT_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    update_params_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_W1, gpu_dC_dW1, LEARNING_RATE, L1_SIZE, INPUT_SIZE, BATCH_SIZE);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    // Launch CUDA kernel
+    num_blocks = (L1_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    update_params_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_B1, gpu_dC_dB1, LEARNING_RATE, L1_SIZE, 1, BATCH_SIZE);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    // Launch CUDA kernel
+    num_blocks = (OUTPUT_SIZE * L1_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    update_params_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_W2, gpu_dC_dW2, LEARNING_RATE, OUTPUT_SIZE, L1_SIZE, BATCH_SIZE);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+    // Launch CUDA kernel
+    num_blocks = (OUTPUT_SIZE + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    update_params_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_B2, gpu_dC_dB2, LEARNING_RATE, OUTPUT_SIZE, 1, BATCH_SIZE);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 }
 
 void get_label_batch(float (&Y)[OUTPUT_SIZE * BATCH_SIZE], const int offsets[NUM_TRAIN_IMAGES], int index) {
@@ -423,12 +604,20 @@ void gradient_descent(float *gpu_W1, float *gpu_W2, float *gpu_B1, float *gpu_B2
     float *gpu_Y;
     float *gpu_A1;
     float *gpu_A2;
+    float *gpu_dC_dW1;
+    float *gpu_dC_dW2;
+    float *gpu_dC_dB1;
+    float *gpu_dC_dB2;
 
     // Allocate GPU memory
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_X, INPUT_SIZE * BATCH_SIZE * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_Y, OUTPUT_SIZE * BATCH_SIZE * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A1, L1_SIZE * BATCH_SIZE * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dW1, BATCH_SIZE * L1_SIZE * INPUT_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dW2, BATCH_SIZE * OUTPUT_SIZE * L1_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dB1, BATCH_SIZE * L1_SIZE * 1 * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dB2, BATCH_SIZE * OUTPUT_SIZE * 1 * sizeof(float)));
 
     // Perform gradient descent for each mini-batch
     for (int i = 0; i < NUM_TRAIN_IMAGES; i += BATCH_SIZE) {
@@ -448,6 +637,12 @@ void gradient_descent(float *gpu_W1, float *gpu_W2, float *gpu_B1, float *gpu_B2
         int batch_correct = get_num_correct(gpu_A2, gpu_Y, OUTPUT_SIZE, BATCH_SIZE);
         total_correct += batch_correct;
 
+        // Back propagate to get dC/W1, dC/dB1, dC/dW2, dC/dB2
+        back_prop(gpu_dC_dW1, gpu_dC_dB1, gpu_dC_dW2, gpu_dC_dB2, gpu_X, gpu_Y, gpu_A1, gpu_A2, gpu_W1, gpu_W2);
+
+        // Update parameters
+        update_params(gpu_W1, gpu_B1, gpu_W2, gpu_B2, gpu_dC_dW1, gpu_dC_dB1, gpu_dC_dW2, gpu_dC_dB2);
+
         // Update console
         cout << "BATCH " << (i / BATCH_SIZE) + 1 << "/" << NUM_BATCHES << " COMPLETE" << endl;
         cout << "BATCH ACCURACY: " << 1.0 * batch_correct / BATCH_SIZE << endl;
@@ -460,42 +655,27 @@ void gradient_descent(float *gpu_W1, float *gpu_W2, float *gpu_B1, float *gpu_B2
     CHECK_CUDA_ERROR(cudaFree(gpu_Y));
     CHECK_CUDA_ERROR(cudaFree(gpu_A1));
     CHECK_CUDA_ERROR(cudaFree(gpu_A2));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dW1));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dW2));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dB1));
+    CHECK_CUDA_ERROR(cudaFree(gpu_dC_dB2));
 }
 
-
-streamoff read(float *X, streamoff position, const string &path, int rows, int cols) {
-
-    // Open file
-    ifstream file(path, ios::in | ios::binary);
-
-    if (file.is_open()) {
-        // Extract matrix X from offset position
-        file.seekg(position);
-
-        double temp = 0;
-        for (int j = 0; j < cols; j++) {
-            for (int i = 0; i < rows; i++) {
-                file.read((char *) &temp, sizeof(double));
-                X[j*rows + i] = (float) temp;
-            }
-        }
-        // Save the resulting position
-        position = file.tellg();
-
-        // Close the file
-        file.close();
-    } else {
-        cout << "Error: Failed to open file WANDB";
-        exit(1);
+__global__ void he_init_kernel(float *gpu_W, int m, int n, unsigned SEED) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < m * n) {
+        curandState state;
+        curand_init(SEED, idx, 0, &state);
+        gpu_W[idx] = curand_normal(&state) * sqrtf(2.0f / m);
     }
-
-    return position;
 }
 
-float W1[L1_SIZE * INPUT_SIZE]{0};
-float B1[L1_SIZE]{0};
-float W2[OUTPUT_SIZE * L1_SIZE]{0};
-float B2[OUTPUT_SIZE]{0};
+void he_init(float *gpu_W, int m, int n) {
+    int num_blocks = (m * n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    he_init_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_W, m, n, SEED);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
 
 int main() {
     // Initialize cuBLAS handle
@@ -513,21 +693,22 @@ int main() {
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B1, L1_SIZE * 1 * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B2, OUTPUT_SIZE * 1 * sizeof(float)));
 
+    // Initialize weights with He initialization method
+    he_init(gpu_W1, L1_SIZE, INPUT_SIZE);
+    he_init(gpu_W2, OUTPUT_SIZE, L1_SIZE);
+
+    // print_tensor("W1", gpu_W1, 1, L1_SIZE, INPUT_SIZE);
+    // print_tensor("W2", gpu_W2, 1, OUTPUT_SIZE, L1_SIZE);
+
+    // Initialize biases to 0
+    CHECK_CUDA_ERROR(cudaMemset(gpu_B1, 0, L1_SIZE * 1 * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMemset(gpu_B2, 0, OUTPUT_SIZE * 1 * sizeof(float)));
+
     // print_tensor("B1", gpu_B1, 1, L1_SIZE, 1);
     // print_tensor("B2", gpu_B2, 1, OUTPUT_SIZE, 1);
 
-    streamoff read_position = 0;
-    read_position = read(W1, read_position, WEIGHTS_AND_BIASES_FILE_PATH, L1_SIZE, INPUT_SIZE);
-    read_position = read(B1, read_position, WEIGHTS_AND_BIASES_FILE_PATH, L1_SIZE, 1);
-    read_position = read(W2, read_position, WEIGHTS_AND_BIASES_FILE_PATH, OUTPUT_SIZE, L1_SIZE);
-    read(B2, read_position, WEIGHTS_AND_BIASES_FILE_PATH, OUTPUT_SIZE, 1);
-
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_W1, W1, L1_SIZE * INPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B1, B1, L1_SIZE * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_W2, W2, OUTPUT_SIZE * L1_SIZE * sizeof(float), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B2, B2, OUTPUT_SIZE * sizeof(float), cudaMemcpyHostToDevice));
-
     // Perform gradient descent
+
     gradient_descent(gpu_W1, gpu_W2, gpu_B1, gpu_B2);
     
     // Free GPU memory
