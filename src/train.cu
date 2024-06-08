@@ -15,7 +15,7 @@
 
 #define LABEL_START 8
 #define IMAGE_START 16
-#define BATCH_SIZE 32
+#define BATCH_SIZE 64
 
 #define NUM_TRAIN_IMAGES 60000
 #define NUM_BATCHES (NUM_TRAIN_IMAGES/BATCH_SIZE)
@@ -24,11 +24,11 @@
 #define NUM_EPOCHS 100
 
 #define INPUT_SIZE 784
-#define L1_SIZE 250
+#define L1_SIZE 400
 #define OUTPUT_SIZE 10
 
 #define BLOCK_SIZE 256
-#define DEBUG_MODE true
+#define PRINT_BATCH_AND_PREDICTIONS false
 
 #define CHECK_CUDA_ERROR(err) { \
     if (err != cudaSuccess) { \
@@ -236,10 +236,10 @@ __global__ void compute_dC_dA2_kernel(float *gpu_dC_dA2, float *gpu_A2, float *g
         int col = (idx / rows) % cols; // j
 
         // Using cross-entropy loss function
-        // gpu_dC_dA2[idx] = -gpu_Y[slice * cols + col] / gpu_A2[slice * cols + col];
+        gpu_dC_dA2[idx] = -gpu_Y[slice * cols + col] / gpu_A2[slice * cols + col];
 
         // Using mean-square error loss function
-        gpu_dC_dA2[idx] = gpu_A2[slice * cols + col] - gpu_Y[slice * cols + col];
+        // gpu_dC_dA2[idx] = gpu_A2[slice * cols + col] - gpu_Y[slice * cols + col];
     }
 }
 
@@ -429,7 +429,7 @@ void back_prop(float *gpu_dC_dW1, float *gpu_dC_dB1, float *gpu_dC_dW2, float *g
 
     // Compute dC/dW2 (nx10x100)
     // Use shortcut: dC/dW2 = transpose(dC/dZ2) * transpose(A1)
-    multiply_tensor_T(gpu_dC_dW2, gpu_dC_dZ2, gpu_A1, BATCH_SIZE, OUTPUT_SIZE, L1_SIZE, 1); // possible error source
+    multiply_tensor_T(gpu_dC_dW2, gpu_dC_dZ2, gpu_A1, BATCH_SIZE, OUTPUT_SIZE, L1_SIZE, 1);
     // print_tensor("dC/dW2", gpu_dC_dW2, BATCH_SIZE, OUTPUT_SIZE, L1_SIZE);
 
     // Compute dC/dB2 (nx1x10)
@@ -439,7 +439,7 @@ void back_prop(float *gpu_dC_dW1, float *gpu_dC_dB1, float *gpu_dC_dW2, float *g
 
     // Compute dC/dW1 (nx100x784)
     // Use shortcut: dC/dW1 = transpose(dC/dZ1) * transpose(X)
-    multiply_tensor_T(gpu_dC_dW1, gpu_dC_dZ1, gpu_X, BATCH_SIZE, L1_SIZE, INPUT_SIZE, 1); // possible error source
+    multiply_tensor_T(gpu_dC_dW1, gpu_dC_dZ1, gpu_X, BATCH_SIZE, L1_SIZE, INPUT_SIZE, 1);
     // print_tensor("dC/dW1", gpu_dC_dW1, BATCH_SIZE, L1_SIZE, INPUT_SIZE);
 
     // Compute dC/dB1 (nx1x100)
@@ -486,8 +486,8 @@ void update_params(float *gpu_W1, float *gpu_B1, float *gpu_W2, float *gpu_B2,
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 }
 
-void get_label_batch(float (&Y)[OUTPUT_SIZE * BATCH_SIZE], const int offsets[NUM_TRAIN_IMAGES], int index) {
-    ifstream labels_file(TRAIN_LABELS_FILE_PATH, ios::in | ios::binary);
+void get_label_batch(float (&Y)[OUTPUT_SIZE * BATCH_SIZE], const int offsets[NUM_TRAIN_IMAGES], int index, string path) {
+    ifstream labels_file(path, ios::in | ios::binary);
     if (labels_file.is_open()) {
         for (int i = 0; i < BATCH_SIZE; i++) {
             labels_file.seekg(LABEL_START + offsets[index + i]);
@@ -503,13 +503,13 @@ void get_label_batch(float (&Y)[OUTPUT_SIZE * BATCH_SIZE], const int offsets[NUM
         }
         labels_file.close();
     } else {
-        cout << "Error: Failed to open file " << TRAIN_LABELS_FILE_PATH << endl;
+        cout << "Error: Failed to open file " << path << endl;
         exit(1);
     }
 }
 
-void get_image_batch(float (&X)[INPUT_SIZE * BATCH_SIZE], const int offsets[NUM_TRAIN_IMAGES], int index) {
-    ifstream images_file(TRAIN_IMAGES_FILE_PATH, ios::in | ios::binary);
+void get_image_batch(float (&X)[INPUT_SIZE * BATCH_SIZE], const int offsets[NUM_TRAIN_IMAGES], int index, string path) {
+    ifstream images_file(path, ios::in | ios::binary);
     if (images_file.is_open()) {
         for (int i = 0; i < BATCH_SIZE; i++) {
             images_file.seekg(IMAGE_START + 784 * offsets[index + i]);
@@ -521,33 +521,8 @@ void get_image_batch(float (&X)[INPUT_SIZE * BATCH_SIZE], const int offsets[NUM_
         }
         images_file.close();
     } else {
-        cout << "Error: Failed to open file " << TRAIN_IMAGES_FILE_PATH << endl;
+        cout << "Error: Failed to open file " << path << endl;
         exit(1);
-    }
-}
-
-void print_batch(float (&X)[INPUT_SIZE * BATCH_SIZE], float (&Y)[OUTPUT_SIZE*BATCH_SIZE]) {
-    for (int i = 0; i < BATCH_SIZE; i++) {
-        // Print label
-        cout << "The following number is: ";
-        for (int label = 0; label < 10; label++) {
-            if (Y[label + i * 10] == 1) {
-                cout << label << "\n";
-                break;
-            }
-        }
-        // Print image
-        for (int value = 0; value < 784; value++) {
-            if (value != 0 && value % 28 == 0) {
-                cout << "\n";
-            }
-            if (X[value + i * 784] < 0.5) {
-                cout << "@.@"; // Represents dark pixel
-            } else {
-                cout << " . "; // Represents light pixel
-            }
-        }
-        cout << "\n";
     }
 }
 
@@ -583,7 +558,53 @@ int get_num_correct(float *gpu_A, float *gpu_Y, int rows, int cols) {
     return num_correct;
 }
 
-void gradient_descent(float *gpu_W1, float *gpu_W2, float *gpu_B1, float *gpu_B2) {
+void print_batch_and_predictions(float *gpu_X, float *gpu_Y, float *gpu_A2) {
+    // CPU matrices
+    float X[INPUT_SIZE * BATCH_SIZE];
+    float Y[OUTPUT_SIZE * BATCH_SIZE];
+    float A2[OUTPUT_SIZE * BATCH_SIZE];
+
+    // Copy from GPU to CPU
+    CHECK_CUDA_ERROR(cudaMemcpy(X, gpu_X, INPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(Y, gpu_Y, OUTPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+    CHECK_CUDA_ERROR(cudaMemcpy(A2, gpu_A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyDeviceToHost));
+
+    for (int i = 0; i < BATCH_SIZE; i++) {
+        // Print image
+        for (int value = 0; value < 784; value++) {
+            if (value != 0 && value % 28 == 0) {
+                cout << endl;
+            }
+            if (X[value + i * 784] < 0.5) {
+                cout << "@.@"; // Represents dark pixel
+            } else {
+                cout << " . "; // Represents light pixel
+            }
+        }
+        cout << endl;
+        // Print predicted and actual label
+        cout << "PREDICTED LABEL: ";
+        float pred_prob = 0;
+        int pred_label = -1;
+        for (int label = 0; label < 10; label++) {
+            if (A2[label + i * 10] > pred_prob) {
+                pred_label = label;
+                pred_prob = A2[label + i * 10];
+            }
+        }
+        cout << pred_label;
+        cout << " - ACTUAL LABEL: ";
+        for (int label = 0; label < 10; label++) {
+            if (Y[label + i * 10] == 1) {
+                cout << label << endl;
+                break;
+            }
+        }
+        cout << endl;
+    }
+}
+
+int gradient_descent(float *gpu_W1, float *gpu_W2, float *gpu_B1, float *gpu_B2) {
     // Number of correct predictions
     int total_correct = 0;
 
@@ -623,8 +644,8 @@ void gradient_descent(float *gpu_W1, float *gpu_W2, float *gpu_B1, float *gpu_B2
     for (int i = 0; i < NUM_TRAIN_IMAGES; i += BATCH_SIZE) {
     
         // Get image and label batch
-        get_image_batch(X, data_offsets, i);
-        get_label_batch(Y, data_offsets, i);
+        get_image_batch(X, data_offsets, i, TRAIN_IMAGES_FILE_PATH);
+        get_label_batch(Y, data_offsets, i, TRAIN_LABELS_FILE_PATH);
 
         // Copy from CPU to GPU
         CHECK_CUDA_ERROR(cudaMemcpy(gpu_X, X, INPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice));
@@ -632,6 +653,11 @@ void gradient_descent(float *gpu_W1, float *gpu_W2, float *gpu_B1, float *gpu_B2
 
         // Forward propagate to get activations A1 and A2
         forward_prop(gpu_X, gpu_A1, gpu_A2, gpu_W1, gpu_B1, gpu_W2, gpu_B2);
+
+        // Print batch and preductions
+        if (PRINT_BATCH_AND_PREDICTIONS) {
+            print_batch_and_predictions(gpu_X, gpu_Y, gpu_A2);
+        }
 
         // Add the number of correct predictions from the mini-batch
         int batch_correct = get_num_correct(gpu_A2, gpu_Y, OUTPUT_SIZE, BATCH_SIZE);
@@ -644,11 +670,31 @@ void gradient_descent(float *gpu_W1, float *gpu_W2, float *gpu_B1, float *gpu_B2
         update_params(gpu_W1, gpu_B1, gpu_W2, gpu_B2, gpu_dC_dW1, gpu_dC_dB1, gpu_dC_dW2, gpu_dC_dB2);
 
         // Update console
-        cout << "BATCH " << (i / BATCH_SIZE) + 1 << "/" << NUM_BATCHES << " COMPLETE" << endl;
-        cout << "BATCH ACCURACY: " << 1.0 * batch_correct / BATCH_SIZE << endl;
-        cout << "ACCURACY: " << 1.0 * total_correct / (i + BATCH_SIZE) << endl;
-        cout << endl;
+        cout << "\r";
+        cout << "BATCH " << (i / BATCH_SIZE) + 1 << "/" << NUM_BATCHES << " ";
+        cout << "[";
+        float percentage_completion = (((float) i / BATCH_SIZE) + 1) / NUM_BATCHES;
+        bool arrow = true;
+        for (int j = 1; j <= 32; j++) {
+            if (percentage_completion >= (float) j / 32) {
+                cout << "=";
+            } else {
+                if (arrow) {
+                    cout << ">";
+                    arrow = false;
+                } else {
+                    cout << ".";
+                }
+            }
+        }
+
+        cout << "] - BATCH ACCURACY: ";
+        printf("%.3f", (float) batch_correct / BATCH_SIZE);
+        cout << " - TOTAL ACCURACY: ";
+        printf("%.3f", (float) total_correct / (i + BATCH_SIZE));
+        cout << flush;;
     }
+    cout << endl;
 
     // Free GPU memory
     CHECK_CUDA_ERROR(cudaFree(gpu_X));
@@ -659,6 +705,8 @@ void gradient_descent(float *gpu_W1, float *gpu_W2, float *gpu_B1, float *gpu_B2
     CHECK_CUDA_ERROR(cudaFree(gpu_dC_dW2));
     CHECK_CUDA_ERROR(cudaFree(gpu_dC_dB1));
     CHECK_CUDA_ERROR(cudaFree(gpu_dC_dB2));
+
+    return total_correct;
 }
 
 __global__ void he_init_kernel(float *gpu_W, int m, int n, unsigned SEED) {
@@ -677,6 +725,22 @@ void he_init(float *gpu_W, int m, int n) {
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 }
 
+__global__ void xavier_init_kernel(float *gpu_W, int m, int n, unsigned SEED) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < m * n) {
+        curandState state;
+        curand_init(SEED, idx, 0, &state);
+        gpu_W[idx] = curand_normal(&state) * sqrtf(1.0f / (m + n));
+    }
+}
+
+void xavier_init(float *gpu_W, int m, int n) {
+    int num_blocks = (m * n + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    he_init_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_W, m, n, SEED);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
 int main() {
     // Initialize cuBLAS handle
     cublasCreate(&HANDLE);
@@ -686,16 +750,24 @@ int main() {
     float *gpu_W2;
     float *gpu_B1;
     float *gpu_B2;
+    float *gpu_test_X;
+    float *gpu_test_Y;
+    float *gpu_test_A1;
+    float *gpu_test_A2;
 
     // Allocate GPU memory
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_W1, L1_SIZE * INPUT_SIZE * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_W2, OUTPUT_SIZE * L1_SIZE * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B1, L1_SIZE * 1 * sizeof(float)));
     CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B2, OUTPUT_SIZE * 1 * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_test_X, INPUT_SIZE * BATCH_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_test_Y, OUTPUT_SIZE * BATCH_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_test_A1, L1_SIZE * BATCH_SIZE * sizeof(float)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_test_A2, OUTPUT_SIZE * BATCH_SIZE * sizeof(float)));
 
     // Initialize weights with He initialization method
     he_init(gpu_W1, L1_SIZE, INPUT_SIZE);
-    he_init(gpu_W2, OUTPUT_SIZE, L1_SIZE);
+    xavier_init(gpu_W2, OUTPUT_SIZE, L1_SIZE);
 
     // print_tensor("W1", gpu_W1, 1, L1_SIZE, INPUT_SIZE);
     // print_tensor("W2", gpu_W2, 1, OUTPUT_SIZE, L1_SIZE);
@@ -707,16 +779,84 @@ int main() {
     // print_tensor("B1", gpu_B1, 1, L1_SIZE, 1);
     // print_tensor("B2", gpu_B2, 1, OUTPUT_SIZE, 1);
 
+    float test_X[INPUT_SIZE * BATCH_SIZE];
+    float test_Y[OUTPUT_SIZE * BATCH_SIZE];
+
+    // Create array of offsets each associated with a label/image pair
+    int data_offsets[NUM_TEST_IMAGES];
+
+    // Fill with numbers 0 to NUM_TRAIN_IMAGES-1 in increasing order
+    iota(data_offsets, data_offsets + NUM_TEST_IMAGES, 0);
+
     // Perform gradient descent
 
-    gradient_descent(gpu_W1, gpu_W2, gpu_B1, gpu_B2);
+    // For each epoch, perform gradient descent and update weights and biases
+    for (int epoch = 1; epoch <= NUM_EPOCHS; epoch++) {
+        cout << "EPOCH " << epoch << "/" << NUM_EPOCHS << endl;
+
+        // Get start time
+        auto start = chrono::high_resolution_clock::now();
+
+        // Store number of correct predictions
+        int train_correct = gradient_descent(gpu_W1, gpu_W2, gpu_B1, gpu_B2);
+
+        // Get end time
+        auto end = chrono::high_resolution_clock::now();
+
+        // Calculate duration of time passed
+        double duration = (double) chrono::duration_cast<chrono::microseconds>(end - start).count()/1000000.0;
+
+        // Calculate remaining time
+        int seconds = (int) duration*(NUM_EPOCHS - epoch);
+        int minutes= seconds/60;
+        int hours= minutes/60;
+        minutes %= 60;
+        seconds %= 60;
+
+        // Find performance on testing set
+        int test_correct = 0;
+        for (int i = 0; i < NUM_TEST_IMAGES; i += BATCH_SIZE) {
+        
+            // Get image and label batch
+            get_image_batch(test_X, data_offsets, i, TEST_IMAGES_FILE_PATH);
+            get_label_batch(test_Y, data_offsets, i, TEST_LABELS_FILE_PATH);
+
+            // Copy from CPU to GPU
+            CHECK_CUDA_ERROR(cudaMemcpy(gpu_test_X, test_X, INPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+            CHECK_CUDA_ERROR(cudaMemcpy(gpu_test_Y, test_Y, OUTPUT_SIZE * BATCH_SIZE * sizeof(float), cudaMemcpyHostToDevice));
+
+            // Forward propagate to get activations A1 and A2
+            forward_prop(gpu_test_X, gpu_test_A1, gpu_test_A2, gpu_W1, gpu_B1, gpu_W2, gpu_B2);
+
+            // Add the number of correct predictions from the mini-batch
+            int batch_correct = get_num_correct(gpu_test_A2, gpu_test_Y, OUTPUT_SIZE, BATCH_SIZE);
+            test_correct += batch_correct;
+        }
+
+        // Print the results of the epoch
+        cout << "TRAIN ACCURACY: " << train_correct << "/" << NUM_TRAIN_IMAGES;
+        printf(" (%.2f%%)", 100.0 * train_correct / NUM_TRAIN_IMAGES);
+        cout << " - TEST ACCURACY: " << test_correct << "/" << NUM_TEST_IMAGES;
+        printf(" (%.2f%%)", 100.0 * test_correct / NUM_TEST_IMAGES);
+        cout << " - TIME ELAPSED: ";
+        printf("%.2fs", duration);
+        cout << " - ETA: ";
+        printf("%02d:%02d:%02d\n", hours, minutes, seconds);
+        cout << endl;
+    }
+
+    cout << "Finished training." << endl;
     
     // Free GPU memory
     CHECK_CUDA_ERROR(cudaFree(gpu_W1));
     CHECK_CUDA_ERROR(cudaFree(gpu_W2));
     CHECK_CUDA_ERROR(cudaFree(gpu_B1));
     CHECK_CUDA_ERROR(cudaFree(gpu_B2));
-    
+    CHECK_CUDA_ERROR(cudaFree(gpu_test_X));
+    CHECK_CUDA_ERROR(cudaFree(gpu_test_Y));
+    CHECK_CUDA_ERROR(cudaFree(gpu_test_A1));
+    CHECK_CUDA_ERROR(cudaFree(gpu_test_A2));
+
     // Free HANDLE
     cublasDestroy(HANDLE);
 
