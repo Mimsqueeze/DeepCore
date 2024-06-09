@@ -27,7 +27,7 @@
 
 #define PRINT_BATCH_AND_PREDICTIONS false
 
-#define WEIGHTS_AND_BIASES_DIR R"(.\src\models\)"
+#define WEIGHTS_AND_BIASES_DIR R"(.\models\)"
 
 #define CHECK_CUDA_ERROR(err) { \
     if (err != cudaSuccess) { \
