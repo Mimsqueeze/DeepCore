@@ -1,9 +1,13 @@
 NVCC= nvcc
 NVCCFLAGS= -lcublas
 
-main: src/train.cu
-	$(NVCC) $(NVCCFLAGS) src/train.cu -o src/train.exe
-	src/train.exe
+main: src/main.cu
+	$(NVCC) $(NVCCFLAGS) src/main.cu -o src/main.exe
+	src/main.exe
+
+deepcore: src/deepcore.cu
+	$(NVCC) $(NVCCFLAGS) src/deepcore.cu -o src/deepcore.exe
+	src/deepcore.exe
 
 test: test/test.cu
 	$(NVCC) $(NVCCFLAGS) test/test.cu -o test/test.exe
