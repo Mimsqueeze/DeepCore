@@ -538,7 +538,9 @@ public:
             layer->destroy();
         }
     }
-    void fit(float *X, int num_features, int num_samples, float *Y, int num_classes, int batch_size = 50, int epochs = 10, float learning_rate = 0.1) {
+    void fit(float *X, int num_features, int num_samples, float *Y, int num_classes, int batch_size = 50, int epochs = 10, float learning_rate = 0.1, 
+             float *validation_X = nullptr, int num_validation = -1, float *validation_Y = nullptr) {
+
         // Note: X must be of dimension num_features x num_samples
         // Y is of dimension num_classes x num_samples
 
@@ -554,7 +556,7 @@ public:
 
         // For each epoch, perform gradient descent and update weights and biases
         for (int epoch = 1; epoch <= epochs; epoch++) {
-            cout << "EPOCH " << epoch << "/" << epochs << endl;
+            cout << endl << "EPOCH " << epoch << "/" << epochs << endl;
 
             // Get start time
             auto start = chrono::high_resolution_clock::now();
@@ -579,20 +581,138 @@ public:
             stringstream output;
             output << "TRAIN ACCURACY: " << train_correct << "/" << num_samples;
             output << " (" << fixed << setprecision(2) << 100.0 * train_correct / num_samples << "%)";
+            
+            // Find performance on validation set if provided
+            if (validation_X != nullptr && validation_Y != nullptr && num_validation > 0) {
+                
+                num_validation = (num_validation / batch_size) * batch_size;
+
+                int validation_correct = 0;
+
+                // Create array of offsets each associated with a label/image pair
+                int *data_offsets = new int[num_validation];
+
+                // Fill with numbers 0 to num_validation-1 in increasing order
+                iota(data_offsets, data_offsets + num_validation, 0);
+
+                float *gpu_valid_X;
+                float *gpu_valid_Y;
+
+                CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_valid_X, num_features * batch_size * sizeof(float)));
+                CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_valid_Y, num_classes * batch_size * sizeof(float)));
+                
+                for (int i = 0; i < num_validation; i += batch_size) {
+                
+                    // Load features and labels
+                    for (int sample_num = 0; sample_num < batch_size; sample_num++) {
+                        CHECK_CUDA_ERROR(cudaMemcpy(gpu_valid_X + sample_num * num_features, validation_X + data_offsets[sample_num + i] * num_features, num_features * 1 * sizeof(float), cudaMemcpyHostToDevice));
+                        CHECK_CUDA_ERROR(cudaMemcpy(gpu_valid_Y + sample_num * num_classes, validation_Y + data_offsets[sample_num + i] * num_classes, num_classes * 1 * sizeof(float), cudaMemcpyHostToDevice));
+                    }
+
+                    // Forward propagate each layer
+                    float *gpu_A_prev = gpu_valid_X;
+                    for (const auto &layer : layers) {
+                        gpu_A_prev = layer->forward_prop(gpu_A_prev, batch_size);
+                    }
+
+                    // Add the number of correct predictions from the mini-batch
+                    int batch_correct = get_num_correct(gpu_A_prev, gpu_valid_Y, num_classes, batch_size);
+                    validation_correct += batch_correct;
+                }
+
+                output << " - VALIDATION ACCURACY: " << validation_correct << "/" << num_validation;
+                output << " (" << fixed << setprecision(2) << 100.0 * validation_correct / num_validation << "%)";
+
+                CHECK_CUDA_ERROR(cudaFree(gpu_valid_X));
+                CHECK_CUDA_ERROR(cudaFree(gpu_valid_Y));
+                delete[] data_offsets;
+            }
+
             output << " - TIME ELAPSED: " << fixed << setprecision(2) << duration << "s";
             output << " - ETA: " << setfill('0') << setw(2) << hours << ":"
             << setfill('0') << setw(2) << minutes << ":"
             << setfill('0') << setw(2) << seconds;
-            output << "\n";
 
             // Print all at once
             cout << output.str() << endl;
         }
 
-        cout << "FINISHED TRAINING." << endl;
+        cout << ">>> TRAINING COMPLETE." << endl << endl;
     }
-    void evaluate() {
+    void evaluate(float *test_X, int num_features, int num_test, float *test_Y, int num_classes, int batch_size = 50) {
 
+        int num_test_batches = (num_test / batch_size);
+        
+        num_test = num_test_batches * batch_size;
+
+        int test_correct = 0;
+
+        // Create array of offsets each associated with a label/image pair
+        int *data_offsets = new int[num_test];
+
+        // Fill with numbers 0 to num_test-1 in increasing order
+        iota(data_offsets, data_offsets + num_test, 0);
+
+        float *gpu_test_X;
+        float *gpu_test_Y;
+
+        CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_test_X, num_features * batch_size * sizeof(float)));
+        CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_test_Y, num_classes * batch_size * sizeof(float)));
+        
+        for (int i = 0; i < num_test; i += batch_size) {
+        
+            // Load features and labels
+            for (int sample_num = 0; sample_num < batch_size; sample_num++) {
+                CHECK_CUDA_ERROR(cudaMemcpy(gpu_test_X + sample_num * num_features, test_X + data_offsets[sample_num + i] * num_features, num_features * 1 * sizeof(float), cudaMemcpyHostToDevice));
+                CHECK_CUDA_ERROR(cudaMemcpy(gpu_test_Y + sample_num * num_classes, test_Y + data_offsets[sample_num + i] * num_classes, num_classes * 1 * sizeof(float), cudaMemcpyHostToDevice));
+            }
+
+            // Forward propagate each layer
+            float *gpu_A_prev = gpu_test_X;
+            for (const auto &layer : layers) {
+                gpu_A_prev = layer->forward_prop(gpu_A_prev, batch_size);
+            }
+
+            // Add the number of correct predictions from the mini-batch
+            int batch_correct = get_num_correct(gpu_A_prev, gpu_test_Y, num_classes, batch_size);
+            test_correct += batch_correct;
+
+            // Update console
+            stringstream output;
+
+            // Update console
+            output << "\r";
+            output << "BATCH " << (i / batch_size) + 1 << "/" << num_test_batches << " ";
+            output << "[";
+
+            float percentage_completion = (((float)i / batch_size) + 1) / num_test_batches;
+            bool arrow = true;
+
+            for (int j = 1; j <= 32; j++) {
+                if (percentage_completion >= (float)j / 32) {
+                    output << "=";
+                } else {
+                    if (arrow) {
+                        output << ">";
+                        arrow = false;
+                    } else {
+                        output << ".";
+                    }
+                }
+            }
+
+            output << "] - TEST ACCURACY: " << test_correct << "/" << num_test;
+            output << " (" << fixed << setprecision(2) << 100.0 * test_correct / num_test << "%)";
+
+            // Print all at once
+            cout << output.str() << flush;
+        }
+        cout << endl;
+        cout << ">>> TESTING COMPLETE." << endl << endl;
+
+        CHECK_CUDA_ERROR(cudaFree(gpu_test_X));
+        CHECK_CUDA_ERROR(cudaFree(gpu_test_Y));
+        delete[] data_offsets;
     }
 private:
     vector<unique_ptr<DeepCore::Layer>> layers;
@@ -642,7 +762,7 @@ private:
         iota(data_offsets, data_offsets + num_samples, 0);
 
         // Randomly shuffle array of offsets to randomize image selection in mini-batches
-        shuffle(data_offsets, data_offsets + num_samples, default_random_engine(SEED));
+        shuffle(data_offsets, data_offsets + num_samples, default_random_engine(chrono::system_clock::now().time_since_epoch().count()));
 
         float *gpu_X;
         float *gpu_Y;
@@ -725,7 +845,6 @@ private:
 
         return total_correct;
     }
-
 };
 
 void get_labels(float *Y, int num_classes, int num_samples, string path, int start_offset) {
@@ -745,7 +864,7 @@ void get_labels(float *Y, int num_classes, int num_samples, string path, int sta
         }
         labels_file.close();
     } else {
-        cout << "Error: Failed to open file " << path << endl;
+        cerr << "ERROR: FAILED TO OPEN FILE " << path << endl;
         exit(1);
     }
 }
@@ -763,18 +882,10 @@ void get_images(float *X, int num_features, int num_samples, string path, int st
         }
         images_file.close();
     } else {
-        cout << "Error: Failed to open file " << path << endl;
+        cerr << "ERROR: FAILED TO OPEN FILE " << path << endl;
         exit(1);
     }
 }
-
-#define TRAIN_LABELS_FILE_PATH R"(.\data\train-labels.idx1-ubyte)"
-#define TRAIN_IMAGES_FILE_PATH R"(.\data\train-images.idx3-ubyte)"
-#define TEST_LABELS_FILE_PATH R"(.\data\t10k-labels.idx1-ubyte)"
-#define TEST_IMAGES_FILE_PATH R"(.\data\t10k-images.idx3-ubyte)"
-#define LABEL_START 8
-#define IMAGE_START 16
-#define NUM_TRAIN_IMAGES 60000
 
 void print_batch(float *X, float *Y, int size) {
     // For size number of labels/images, print them
@@ -802,8 +913,22 @@ void print_batch(float *X, float *Y, int size) {
     }
 }
 
+#define TRAIN_LABELS_FILE_PATH R"(.\data\train-labels.idx1-ubyte)"
+#define TRAIN_IMAGES_FILE_PATH R"(.\data\train-images.idx3-ubyte)"
+#define TEST_LABELS_FILE_PATH R"(.\data\t10k-labels.idx1-ubyte)"
+#define TEST_IMAGES_FILE_PATH R"(.\data\t10k-images.idx3-ubyte)"
+
+#define LABEL_START 8
+#define IMAGE_START 16
+
+#define NUM_TRAIN_IMAGES 60000
+#define NUM_TEST_IMAGES 10000
+
 float X[784 * NUM_TRAIN_IMAGES];
 float Y[10 * NUM_TRAIN_IMAGES];
+
+float test_X[784 * NUM_TEST_IMAGES];
+float test_Y[10 * NUM_TEST_IMAGES];
 
 int main() {
     // Initialize cuBLAS handle
@@ -812,13 +937,17 @@ int main() {
     get_images(X, 784, NUM_TRAIN_IMAGES, TRAIN_IMAGES_FILE_PATH, IMAGE_START);
     get_labels(Y, 10, NUM_TRAIN_IMAGES, TRAIN_LABELS_FILE_PATH, LABEL_START);
 
+    get_images(test_X, 784, NUM_TEST_IMAGES, TEST_IMAGES_FILE_PATH, IMAGE_START);
+    get_labels(test_Y, 10, NUM_TEST_IMAGES, TEST_LABELS_FILE_PATH, LABEL_START);
+
     DeepCore model;
     model.add(make_unique<DeepCore::Flatten>(784)); // input layer
     model.add(make_unique<DeepCore::Dense>(400, RELU)); // first layer
     model.add(make_unique<DeepCore::Dense>(200, RELU)); // first layer
     model.add(make_unique<DeepCore::Dense>(10, SOFTMAX)); // second (output) layer
     model.compile(CROSS_ENTROPY);
-    model.fit(X, 784, NUM_TRAIN_IMAGES, Y, 10, 50, 10, 0.1);
+    model.fit(X, 784, NUM_TRAIN_IMAGES, Y, 10, 50, 10, 0.1, test_X, NUM_TEST_IMAGES, test_Y);
+    model.evaluate(test_X, 784, NUM_TEST_IMAGES, test_Y, 10, 50);
     model.destroy();
 
     return 0;
