@@ -397,6 +397,8 @@ public:
         virtual float *forward_prop(float *gpu_A_prev, int batch_size) = 0;
         virtual float *back_prop(float *gpu_dC_dA, int batch_size) = 0;
         virtual void update_params(float learning_rate, int batch_size) = 0;
+        string name, output_shape;
+        int param_count;
     };
 
     class Dense : public Layer {
@@ -426,6 +428,12 @@ public:
 
             // initialized biases
             CHECK_CUDA_ERROR(cudaMemset(gpu_B, 0, num_nodes * 1 * sizeof(float)));
+
+            // initialize fields for output string
+            name = "Dense";
+            output_shape = "(" + to_string(batch_size) + ", " + to_string(num_nodes) + ", 1)";
+            param_count = (prev_num_nodes * num_nodes) + num_nodes;
+
             return num_nodes;
         }
         void destroy() override {
@@ -509,6 +517,12 @@ public:
         Flatten(int num_nodes) : num_nodes(num_nodes) {}
         int init(int prev_num_nodes, int batch_size) override {
             CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A, num_nodes * batch_size * sizeof(float)));
+
+            // initialize fields for output string
+            name = "Flatten";
+            output_shape = "(" + to_string(batch_size) + ", " + to_string(num_nodes) + ", 1)";
+            param_count = 0;
+
             return num_nodes;
         }
         void destroy() override {
@@ -549,6 +563,27 @@ public:
         for (const auto &layer : layers) {
             prev_num_nodes = (*layer).init(prev_num_nodes, batch_size);
         }
+
+        // Print the compiled model
+        stringstream model_string;
+        model_string << "COMPILED MODEL:" << endl;
+        model_string << "______________________________________________________________________" << endl;
+        model_string << " Layer (type)                 Output Shape                  Param #   " << endl;
+        model_string << "======================================================================" << endl;
+
+        int total_params = 0;
+        for (const auto& layer : layers) {
+            model_string << " " << left << setw(29) << layer->name 
+            << left << setw(30) << layer->output_shape 
+            << left << setw(10) << layer->param_count << endl;
+            total_params += layer->param_count;
+        }
+
+        model_string << "======================================================================" << endl;
+        model_string << "Total trainable params: " << total_params << "\n";
+        model_string << "______________________________________________________________________" << endl;
+        
+        cout << model_string.str();
 
         // Adjust num_samples for batch_size
         this->num_batches = num_samples/batch_size;
@@ -941,14 +976,13 @@ int main() {
     get_labels(test_Y, 10, NUM_TEST_IMAGES, TEST_LABELS_FILE_PATH, LABEL_START);
 
     DeepCore model;
-    model.add(make_unique<DeepCore::Flatten>(784)); // input layer
-    model.add(make_unique<DeepCore::Dense>(400, RELU)); // first layer
-    model.add(make_unique<DeepCore::Dense>(200, RELU)); // first layer
-    model.add(make_unique<DeepCore::Dense>(10, SOFTMAX)); // second (output) layer
+    model.add(make_unique<DeepCore::Flatten>(784));
+    model.add(make_unique<DeepCore::Dense>(400, RELU));
+    model.add(make_unique<DeepCore::Dense>(200, RELU));
+    model.add(make_unique<DeepCore::Dense>(10, SOFTMAX));
     model.compile(CROSS_ENTROPY);
     model.fit(X, 784, NUM_TRAIN_IMAGES, Y, 10, 50, 10, 0.1, test_X, NUM_TEST_IMAGES, test_Y);
     model.evaluate(test_X, 784, NUM_TEST_IMAGES, test_Y, 10, 50);
     model.destroy();
-
     return 0;
 }
