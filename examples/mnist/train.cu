@@ -25,7 +25,7 @@
 #define NUM_EPOCHS 100
 
 #define INPUT_SIZE 784
-#define L1_SIZE 600
+#define L1_SIZE 250
 #define OUTPUT_SIZE 10
 
 #define BLOCK_SIZE 256
@@ -296,7 +296,7 @@ __global__ void compute_dA1_dZ1_kernel(float* gpu_dA1_dZ1, float *gpu_A1, int sl
         if (col == row && gpu_A1[slice * rows + row] > 0) {
             gpu_dA1_dZ1[idx] = 1;
         } else {
-            gpu_dA1_dZ1 = 0;
+            gpu_dA1_dZ1[idx] = 0;
         }
     }
 }

@@ -10,6 +10,7 @@
 #include <curand_kernel.h>
 #include <stdlib.h>
 #include <memory>
+#include <sstream>
 
 #define BLOCK_SIZE 256
 
@@ -139,6 +140,84 @@ void apply_softmax(float *gpu_A, int rows, int cols) {
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 
     CHECK_CUDA_ERROR(cudaFree(gpu_NORM));
+}
+
+// CUDA kernel to compute the dC/dA2 Jacobian
+__global__ void compute_dC_dAL_kernel(float *gpu_dC_dAL, float *gpu_AL, float *gpu_Y, int slices, int rows, int cols, Loss func) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = slices * rows * cols;
+    if (idx < totalElements) {
+        int slice = idx / (rows * cols); // k
+        int col = (idx / rows) % cols; // j
+
+        if (func == CROSS_ENTROPY) {
+            // Using cross-entropy loss function
+            gpu_dC_dAL[idx] = -gpu_Y[slice * cols + col] / gpu_AL[slice * cols + col];
+        } else if (func == MSE)  {
+            // Using mean-square error loss function
+            gpu_dC_dAL[idx] = gpu_AL[slice * cols + col] - gpu_Y[slice * cols + col];
+        }
+    }
+}
+
+void compute_dC_dAL(float *gpu_dC_dAL, float *gpu_AL, float *gpu_Y, int slices, int rows, int cols, Loss func) {
+    int num_blocks = (slices * rows * cols + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    compute_dC_dAL_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_dC_dAL, gpu_AL, gpu_Y, slices, rows, cols, func);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
+__global__ void compute_dA_dZ_kernel(float* gpu_dA_dZ, float *gpu_A, int slices, int rows, int cols, Activation func) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = slices * rows * cols;
+    if (idx < totalElements) {
+        int slice = idx / (rows * cols); // k
+        int col = (idx / rows) % cols; // j
+        int row = idx % rows; // i
+        float a_i = gpu_A[slice * rows + row];
+        float a_j = gpu_A[slice * rows + col];
+        if (func == SOFTMAX) {
+            if (row == col) {
+                gpu_dA_dZ[idx] = a_i * (1.0f - a_j);
+            } else {
+                gpu_dA_dZ[idx] = a_i * (-a_j);
+            }
+        } else if (func == RELU) {
+            if (col == row && a_i > 0) {
+                gpu_dA_dZ[idx] = 1;
+            } else {
+                gpu_dA_dZ[idx] = 0;
+            }
+        }
+
+    }
+}
+
+void compute_dA_dZ(float* gpu_dA_dZ, float *gpu_A, int slices, int rows, int cols, Activation func) {
+    int num_blocks = (slices * rows * cols + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    compute_dA_dZ_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_dA_dZ, gpu_A, slices, rows, cols, func);
+    CHECK_CUDA_ERROR(cudaGetLastError());
+    CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+}
+
+void compute_dZ_dA_prev(float* gpu_dZ_dA_prev, float *gpu_W, int slices, int rows, int cols) {
+    for (int slice = 0; slice < slices; slice++) {
+        CHECK_CUDA_ERROR(cudaMemcpy(gpu_dZ_dA_prev + slice * rows * cols, gpu_W, rows * cols * sizeof(float), cudaMemcpyDeviceToDevice));
+    }
+}
+
+// CUDA kernel to update params in gpu_P
+__global__ void update_params_kernel(float *gpu_P, float *gpu_dP, float learning_rate, int rows, int cols, int batches) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalElements = rows * cols;
+    if (idx < totalElements) { // let's just use a loop here
+        float avg_deriv = 0;
+        for (int batch = 0; batch < batches; batch++) {
+            avg_deriv += gpu_dP[idx + (batch * rows * cols)];
+        }
+        avg_deriv /= batches;
+        gpu_P[idx] = gpu_P[idx] - learning_rate * avg_deriv;
+    }
 }
 
 void multiply_tensor_T(float *gpu_result, float *gpu_A, float *gpu_B, int slices, int m, int n, int k) {
@@ -315,7 +394,9 @@ public:
     public:
         virtual int init(int prev_num_nodes, int batch_size) = 0;
         virtual void destroy() = 0;
-        virtual float *forward_prop(float *gpu_prev_A, int batch_size) = 0;
+        virtual float *forward_prop(float *gpu_A_prev, int batch_size) = 0;
+        virtual float *back_prop(float *gpu_dC_dA, int batch_size) = 0;
+        virtual void update_params(float learning_rate, int batch_size) = 0;
     };
 
     class Dense : public Layer {
@@ -328,6 +409,14 @@ public:
             CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_W, num_nodes * prev_num_nodes * sizeof(float)));
             CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B, num_nodes * 1 * sizeof(float)));
             CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A, num_nodes * batch_size * sizeof(float)));
+
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dA_dZ, batch_size * num_nodes * num_nodes * sizeof(float)));
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ_dA_prev, batch_size * num_nodes * prev_num_nodes * sizeof(float)));
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dA_dA_prev, batch_size * num_nodes * prev_num_nodes * sizeof(float)));
+
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dZ, batch_size * 1 * num_nodes * sizeof(float)));
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dW, batch_size * num_nodes * prev_num_nodes * sizeof(float)));
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dB, batch_size * 1 * num_nodes * sizeof(float)));
 
             if (activation_func == RELU) { // initialize weights
                 he_init(gpu_W, num_nodes, prev_num_nodes);
@@ -343,10 +432,20 @@ public:
             CHECK_CUDA_ERROR(cudaFree(gpu_W));
             CHECK_CUDA_ERROR(cudaFree(gpu_B));
             CHECK_CUDA_ERROR(cudaFree(gpu_A));
+
+            CHECK_CUDA_ERROR(cudaFree(gpu_dA_dZ));
+            CHECK_CUDA_ERROR(cudaFree(gpu_dZ_dA_prev));
+            CHECK_CUDA_ERROR(cudaFree(gpu_dA_dA_prev));
+
+            CHECK_CUDA_ERROR(cudaFree(gpu_dC_dZ));
+            CHECK_CUDA_ERROR(cudaFree(gpu_dC_dW));
+            CHECK_CUDA_ERROR(cudaFree(gpu_dC_dB));
         }
-        float *forward_prop(float *gpu_prev_A, int batch_size) override {
+        float *forward_prop(float *gpu_A_prev, int batch_size) override {
+            this->gpu_A_prev = gpu_A_prev;
+
             // Perform A = W*prev_A
-            multiply_tensor(gpu_A, gpu_W, gpu_prev_A, 1, num_nodes, batch_size, prev_num_nodes);
+            multiply_tensor(gpu_A, gpu_W, gpu_A_prev, 1, num_nodes, batch_size, prev_num_nodes);
 
             // Perform A = A + B
             add_bias(gpu_A, gpu_B, num_nodes, batch_size);
@@ -359,6 +458,33 @@ public:
             }
             return gpu_A;
         }
+        float *back_prop(float *gpu_dC_dA, int batch_size) override {
+            compute_dA_dZ(gpu_dA_dZ, gpu_A, batch_size, num_nodes, num_nodes, activation_func);
+            compute_dZ_dA_prev(gpu_dZ_dA_prev, gpu_W, batch_size, num_nodes, prev_num_nodes);
+            multiply_tensor(gpu_dA_dA_prev, gpu_dA_dZ, gpu_dZ_dA_prev, batch_size, num_nodes, prev_num_nodes, num_nodes);
+
+            multiply_tensor(gpu_dC_dZ, gpu_dC_dA, gpu_dA_dZ, batch_size, 1, num_nodes, num_nodes);
+            multiply_tensor_T(gpu_dC_dW, gpu_dC_dZ, gpu_A_prev, batch_size, num_nodes, prev_num_nodes, 1);
+            CHECK_CUDA_ERROR(cudaMemcpy(gpu_dC_dB, gpu_dC_dZ, batch_size * 1 * num_nodes * sizeof(float), cudaMemcpyDeviceToDevice));
+
+            float *gpu_dC_dA_prev;
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dA_prev, batch_size * 1 * prev_num_nodes * sizeof(float)));
+            multiply_tensor(gpu_dC_dA_prev, gpu_dC_dA, gpu_dA_dA_prev, batch_size, 1, prev_num_nodes, num_nodes);
+            return gpu_dC_dA_prev; // must be freed in caller
+        }
+        void update_params(float learning_rate, int batch_size) override {
+            // Launch CUDA kernel
+            int num_blocks = (num_nodes * prev_num_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            update_params_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_W, gpu_dC_dW, learning_rate, num_nodes, prev_num_nodes, batch_size);
+            CHECK_CUDA_ERROR(cudaGetLastError());
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+
+            // Launch CUDA kernel
+            num_blocks = (num_nodes + BLOCK_SIZE - 1) / BLOCK_SIZE;
+            update_params_kernel<<<num_blocks, BLOCK_SIZE>>>(gpu_B, gpu_dC_dB, learning_rate, num_nodes, 1, batch_size);
+            CHECK_CUDA_ERROR(cudaGetLastError());
+            CHECK_CUDA_ERROR(cudaDeviceSynchronize());
+        }
     private:
         int prev_num_nodes;
         int num_nodes;
@@ -366,6 +492,16 @@ public:
         float *gpu_A;
         float *gpu_W;
         float *gpu_B;
+
+        float *gpu_dA_dZ;
+        float *gpu_dZ_dA_prev;
+        float *gpu_dA_dA_prev;
+
+        float *gpu_dC_dZ;
+        float *gpu_dC_dW;
+        float *gpu_dC_dB;
+
+        float *gpu_A_prev; // reference to activations of previous layer
     };
 
     class Flatten : public Layer {
@@ -378,10 +514,14 @@ public:
         void destroy() override {
             CHECK_CUDA_ERROR(cudaFree(gpu_A));
         }
-        float *forward_prop(float *gpu_prev_A, int batch_size) override {
-            CHECK_CUDA_ERROR(cudaMemcpy(gpu_A, gpu_prev_A, num_nodes * batch_size * sizeof(float), cudaMemcpyDeviceToDevice));
+        float *forward_prop(float *gpu_A_prev, int batch_size) override {
+            CHECK_CUDA_ERROR(cudaMemcpy(gpu_A, gpu_A_prev, num_nodes * batch_size * sizeof(float), cudaMemcpyDeviceToDevice));
             return gpu_A;
         }
+        float *back_prop(float *gpu_dC_dA, int batch_size) override {
+            return gpu_dC_dA;
+        }
+        void update_params(float learning_rate, int batch_size) override {}
     private:
         int num_nodes;
         float *gpu_A;
@@ -398,19 +538,19 @@ public:
             layer->destroy();
         }
     }
-    void fit(float *X, int num_features, int num_samples, float *Y, int num_classes, int batch_size = 50, int epochs = 10) {
+    void fit(float *X, int num_features, int num_samples, float *Y, int num_classes, int batch_size = 50, int epochs = 10, float learning_rate = 0.1) {
         // Note: X must be of dimension num_features x num_samples
         // Y is of dimension num_classes x num_samples
 
         // Initialize layers
-        this->batch_size = batch_size;
         int prev_num_nodes = -1;
         for (const auto &layer : layers) {
             prev_num_nodes = (*layer).init(prev_num_nodes, batch_size);
         }
 
         // Adjust num_samples for batch_size
-        num_samples = (num_samples/batch_size) * batch_size;
+        this->num_batches = num_samples/batch_size;
+        num_samples = num_batches * batch_size;
 
         // For each epoch, perform gradient descent and update weights and biases
         for (int epoch = 1; epoch <= epochs; epoch++) {
@@ -420,7 +560,7 @@ public:
             auto start = chrono::high_resolution_clock::now();
 
             // Store number of correct predictions
-            int train_correct = gradient_descent(X, num_features, num_samples, Y, num_classes, batch_size);
+            int train_correct = gradient_descent(X, num_features, num_samples, Y, num_classes, batch_size, learning_rate);
 
             // Get end time
             auto end = chrono::high_resolution_clock::now();
@@ -436,13 +576,17 @@ public:
             seconds %= 60;
 
             // Print the results of the epoch
-            cout << "TRAIN ACCURACY: " << train_correct << "/" << num_samples;
-            printf(" (%.2f%%)", 100.0 * train_correct / num_samples);
-            cout << " - TIME ELAPSED: ";
-            printf("%.2fs", duration);
-            cout << " - ETA: ";
-            printf("%02d:%02d:%02d\n", hours, minutes, seconds);
-            cout << endl;
+            stringstream output;
+            output << "TRAIN ACCURACY: " << train_correct << "/" << num_samples;
+            output << " (" << fixed << setprecision(2) << 100.0 * train_correct / num_samples << "%)";
+            output << " - TIME ELAPSED: " << fixed << setprecision(2) << duration << "s";
+            output << " - ETA: " << setfill('0') << setw(2) << hours << ":"
+            << setfill('0') << setw(2) << minutes << ":"
+            << setfill('0') << setw(2) << seconds;
+            output << "\n";
+
+            // Print all at once
+            cout << output.str() << endl;
         }
 
         cout << "FINISHED TRAINING." << endl;
@@ -453,9 +597,41 @@ public:
 private:
     vector<unique_ptr<DeepCore::Layer>> layers;
     Loss loss_func;
-    int batch_size;
+    int num_batches;
+    
+    int get_num_correct(float *gpu_A, float *gpu_Y, int rows, int cols) {
+        // Allocate CPU memory
+        float *A = new float[rows * cols];
+        float *Y = new float[rows * cols];
 
-    int gradient_descent(float *X, int num_features, int num_samples, float *Y, int num_classes, int batch_size) {
+        // Copy from CPU to GPU
+        CHECK_CUDA_ERROR(cudaMemcpy(A, gpu_A, rows * cols * sizeof(float), cudaMemcpyDeviceToHost));
+        CHECK_CUDA_ERROR(cudaMemcpy(Y, gpu_Y, rows * cols * sizeof(float), cudaMemcpyDeviceToHost));
+
+        int num_correct = 0;
+
+        for (int col = 0; col < cols; col++) {
+            int predicted_class;
+            float predicted_probability = 0;
+            for (int row = 0; row < rows; row++) {
+                if (A[col * rows + row] > predicted_probability) {
+                    predicted_class = row;
+                    predicted_probability = A[col * rows + row];
+                }
+            }
+            if (Y[col * rows + predicted_class] == 1) {
+                num_correct++;
+            }
+        }
+
+        // Free CPU memory
+        delete[] A;
+        delete[] Y;
+
+        return num_correct;
+    }
+
+    int gradient_descent(float *X, int num_features, int num_samples, float *Y, int num_classes, int batch_size, float learning_rate) {
         // Number of correct predictions
         int total_correct = 0;
 
@@ -473,7 +649,7 @@ private:
 
         CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_X, num_features * batch_size * sizeof(float)));
         CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_Y, num_classes * batch_size * sizeof(float)));
-
+        
         // Perform gradient descent for each mini-batch
         for (int i = 0; i < num_samples; i += batch_size) {
             
@@ -487,12 +663,59 @@ private:
             // print_batch(gpu_X, num_features, batch_size, gpu_Y, num_classes);
 
             // Forward propagate each layer
-            float *gpu_prev_A = gpu_X;
+            float *gpu_A_prev = gpu_X;
             for (const auto &layer : layers) {
-                gpu_prev_A = layer->forward_prop(gpu_prev_A, batch_size);
+                gpu_A_prev = layer->forward_prop(gpu_A_prev, batch_size);
             }
 
-            cout << "done forward prop" << endl;
+            // Add the number of correct predictions from the mini-batch
+            int batch_correct = get_num_correct(gpu_A_prev, gpu_Y, num_classes, batch_size);
+            total_correct += batch_correct;
+            
+            // Back propagate
+            float *gpu_dC_dA_prev;
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dA_prev, batch_size * 1 * num_classes * sizeof(float)));
+            compute_dC_dAL(gpu_dC_dA_prev, gpu_A_prev, gpu_Y, batch_size, 1, num_classes, loss_func);
+            float *gpu_dC_dA;
+            for (auto layer = layers.rbegin(); layer != layers.rend(); ++layer) {
+                gpu_dC_dA = (*layer)->back_prop(gpu_dC_dA_prev, batch_size);
+                CHECK_CUDA_ERROR(cudaFree(gpu_dC_dA_prev));
+                gpu_dC_dA_prev = gpu_dC_dA;
+            }
+
+            // Update parameters
+            for (const auto &layer : layers) {
+                layer->update_params(learning_rate, batch_size);
+            }
+
+            // Update console
+            stringstream output;
+
+            output << "\r";
+            output << "BATCH " << (i / batch_size) + 1 << "/" << num_batches << " ";
+            output << "[";
+
+            float percentage_completion = (((float) i / batch_size) + 1) / num_batches;
+            bool arrow = true;
+            
+            for (int j = 1; j <= 32; j++) {
+                if (percentage_completion >= (float) j / 32) {
+                    output << "=";
+                } else {
+                    if (arrow) {
+                        output << ">";
+                        arrow = false;
+                    } else {
+                        output << ".";
+                    }
+                }
+            }
+
+            output << "] - BATCH ACCURACY: ";
+            output << fixed << setprecision(3) << (float)batch_correct / batch_size;
+            output << " - TOTAL ACCURACY: ";
+            output << fixed << setprecision(3) << (float)total_correct / (i + batch_size);
+            cout << output.str() << flush;;
         }
         cout << endl;
 
@@ -551,8 +774,7 @@ void get_images(float *X, int num_features, int num_samples, string path, int st
 #define TEST_IMAGES_FILE_PATH R"(.\data\t10k-images.idx3-ubyte)"
 #define LABEL_START 8
 #define IMAGE_START 16
-#define NUM_TRAIN_IMAGES 100
-
+#define NUM_TRAIN_IMAGES 60000
 
 void print_batch(float *X, float *Y, int size) {
     // For size number of labels/images, print them
@@ -580,21 +802,23 @@ void print_batch(float *X, float *Y, int size) {
     }
 }
 
+float X[784 * NUM_TRAIN_IMAGES];
+float Y[10 * NUM_TRAIN_IMAGES];
+
 int main() {
     // Initialize cuBLAS handle
     cublasCreate(&HANDLE);
 
-    float X[784 * NUM_TRAIN_IMAGES];
-    float Y[10 * NUM_TRAIN_IMAGES];
     get_images(X, 784, NUM_TRAIN_IMAGES, TRAIN_IMAGES_FILE_PATH, IMAGE_START);
     get_labels(Y, 10, NUM_TRAIN_IMAGES, TRAIN_LABELS_FILE_PATH, LABEL_START);
 
     DeepCore model;
     model.add(make_unique<DeepCore::Flatten>(784)); // input layer
-    model.add(make_unique<DeepCore::Dense>(100, RELU)); // first layer
+    model.add(make_unique<DeepCore::Dense>(400, RELU)); // first layer
+    model.add(make_unique<DeepCore::Dense>(200, RELU)); // first layer
     model.add(make_unique<DeepCore::Dense>(10, SOFTMAX)); // second (output) layer
     model.compile(CROSS_ENTROPY);
-    model.fit(X, 784, NUM_TRAIN_IMAGES, Y, 10, 50, 10);
+    model.fit(X, 784, NUM_TRAIN_IMAGES, Y, 10, 50, 10, 0.1);
     model.destroy();
 
     return 0;
