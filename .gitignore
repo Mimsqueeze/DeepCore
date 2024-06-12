@@ -6,4 +6,5 @@
 *.exp
 /test
 /.vscode
+/.idea
 /backups

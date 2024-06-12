@@ -1,3 +1,10 @@
+#ifndef DEEPCORE_CU
+#define DEEPCORE_CU
+
+////////////////////////////////////////////////////////////////////////////////
+//                                  INCLUDES                                  //
+////////////////////////////////////////////////////////////////////////////////
+
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -12,26 +19,45 @@
 #include <memory>
 #include <sstream>
 
-#define BLOCK_SIZE 256
+using namespace std;
 
-cublasHandle_t HANDLE;
-const unsigned SEED = std::chrono::system_clock::now().time_since_epoch().count();
-const float ALPHA = 1.0f;
-const float BETA = 0.0f;
+////////////////////////////////////////////////////////////////////////////////
+//                                   ENUMS                                    //
+////////////////////////////////////////////////////////////////////////////////
+
+enum Activation { NO_ACTIVATION = -1, RELU = 0, SOFTMAX = 1 };
+
+enum Loss { NO_LOSS = -1, CROSS_ENTROPY = 0, MSE = 1 };
+
+enum LayerType { NO_LAYER = -1, FLATTEN = 0, DENSE = 1 };
+
+////////////////////////////////////////////////////////////////////////////////
+//                                 CONSTANTS                                  //
+////////////////////////////////////////////////////////////////////////////////
 
 #define CHECK_CUDA_ERROR(err) { \
     if (err != cudaSuccess) { \
-        std::cerr << "CUDA error: " << cudaGetErrorString(err) << " at line " << __LINE__ << std::endl; \
+        cerr << "CUDA error: " << cudaGetErrorString(err) << " at line " << __LINE__ << endl; \
         exit(EXIT_FAILURE); \
     } \
 }
 
 #define CHECK_CUBLAS_ERROR(err) { \
     if (err != CUBLAS_STATUS_SUCCESS) { \
-        std::cerr << "cuBLAS error: " << _cudaGetErrorEnum(err) << " at line " << __LINE__ << std::endl; \
+        cerr << "cuBLAS error: " << _cudaGetErrorEnum(err) << " at line " << __LINE__ << endl; \
         exit(EXIT_FAILURE); \
     } \
 }
+
+#define BLOCK_SIZE 256
+
+const unsigned SEED = std::chrono::system_clock::now().time_since_epoch().count();
+const float ALPHA = 1.0f;
+const float BETA = 0.0f;
+
+////////////////////////////////////////////////////////////////////////////////
+//                           CUDA FUNCTIONS/KERNELS                           //
+////////////////////////////////////////////////////////////////////////////////
 
 const char* _cudaGetErrorEnum(cublasStatus_t error) {
     switch (error) {
@@ -56,19 +82,89 @@ const char* _cudaGetErrorEnum(cublasStatus_t error) {
     }
 }
 
-using namespace std;
+void multiply_tensor_T(float *gpu_result, float *gpu_A, float *gpu_B, int slices, int m, int n, int k) {
+    // Allocate arrays for the pointers
+    float** A_array = new float*[slices];
+    float** B_array = new float*[slices];
+    float** result_array = new float*[slices];
 
-enum Activation {
-    NO_ACTIVATION = -1, RELU = 0, SOFTMAX = 1
-};
+    for (int i = 0; i < slices; ++i) {
+        A_array[i] = gpu_A + i * m * k;
+        B_array[i] = gpu_B + i * k * n;
+        result_array[i] = gpu_result + i * m * n;
+    }
 
-enum Loss {
-    NO_LOSS = -1, CROSS_ENTROPY = 0, MSE = 1
-};
+    float** gpu_A_array;
+    float** gpu_B_array;
+    float** gpu_C_array;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A_array, slices * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B_array, slices * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_C_array, slices * sizeof(float*)));
 
-enum LayerType {
-    NO_LAYER = -1, FLATTEN = 0, DENSE = 1
-};
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A_array, A_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B_array, B_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_C_array, result_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
+
+    // Transpose A and B
+    cublasHandle_t handle;
+    cublasCreate(&handle);
+    CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle, CUBLAS_OP_T, CUBLAS_OP_T, m, n, k,
+                                        &ALPHA, (const float**)gpu_A_array, k,
+                                        (const float**)gpu_B_array, n,
+                                        &BETA, gpu_C_array, m, slices));
+    cublasDestroy(handle);
+
+    // Free dynamically allocated arrays
+    delete[] A_array;
+    delete[] B_array;
+    delete[] result_array;
+
+    CHECK_CUDA_ERROR(cudaFree(gpu_A_array));
+    CHECK_CUDA_ERROR(cudaFree(gpu_B_array));
+    CHECK_CUDA_ERROR(cudaFree(gpu_C_array));
+}
+
+void multiply_tensor(float *gpu_result, float *gpu_A, float *gpu_B, int slices, int m, int n, int k) {
+    // Allocate arrays for the pointers
+    float** A_array = new float*[slices]{0};
+    float** B_array = new float*[slices]{0};
+    float** result_array = new float*[slices]{0};
+
+    for (int i = 0; i < slices; ++i) {
+        A_array[i] = gpu_A + i * m * k;
+        B_array[i] = gpu_B + i * k * n;
+        result_array[i] = gpu_result + i * m * n;
+    }
+
+    float** gpu_A_array;
+    float** gpu_B_array;
+    float** gpu_C_array;
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A_array, slices * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B_array, slices * sizeof(float*)));
+    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_C_array, slices * sizeof(float*)));
+
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A_array, A_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B_array, B_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
+    CHECK_CUDA_ERROR(cudaMemcpy(gpu_C_array, result_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
+
+    cublasHandle_t handle;
+    cublasCreate(&handle);
+    // Perform batched matrix multiplication
+    CHECK_CUBLAS_ERROR(cublasSgemmBatched(handle, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k,
+                                        &ALPHA, (const float**)gpu_A_array, m,
+                                        (const float**)gpu_B_array, k,
+                                        &BETA, gpu_C_array, m, slices));
+    cublasDestroy(handle);
+    
+    // Free dynamically allocated arrays
+    delete[] A_array;
+    delete[] B_array;
+    delete[] result_array;
+
+    CHECK_CUDA_ERROR(cudaFree(gpu_A_array));
+    CHECK_CUDA_ERROR(cudaFree(gpu_B_array));
+    CHECK_CUDA_ERROR(cudaFree(gpu_C_array));
+}
 
 // CUDA kernel to add the bias vector to the activation matrix
 __global__ void add_bias_kernel(float *gpu_A, float *gpu_B, int rows, int cols) {
@@ -223,84 +319,6 @@ __global__ void update_params_kernel(float *gpu_P, float *gpu_dP, float learning
     }
 }
 
-void multiply_tensor_T(float *gpu_result, float *gpu_A, float *gpu_B, int slices, int m, int n, int k) {
-    // Allocate arrays for the pointers
-    float** A_array = new float*[slices];
-    float** B_array = new float*[slices];
-    float** result_array = new float*[slices];
-
-    for (int i = 0; i < slices; ++i) {
-        A_array[i] = gpu_A + i * m * k;
-        B_array[i] = gpu_B + i * k * n;
-        result_array[i] = gpu_result + i * m * n;
-    }
-
-    float** gpu_A_array;
-    float** gpu_B_array;
-    float** gpu_C_array;
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A_array, slices * sizeof(float*)));
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B_array, slices * sizeof(float*)));
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_C_array, slices * sizeof(float*)));
-
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A_array, A_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B_array, B_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_C_array, result_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
-
-    // Transpose A and B
-    CHECK_CUBLAS_ERROR(cublasSgemmBatched(HANDLE, CUBLAS_OP_T, CUBLAS_OP_T, m, n, k,
-                                          &ALPHA, (const float**)gpu_A_array, k,
-                                          (const float**)gpu_B_array, n,
-                                          &BETA, gpu_C_array, m, slices));
-
-    // Free dynamically allocated arrays
-    delete[] A_array;
-    delete[] B_array;
-    delete[] result_array;
-
-    CHECK_CUDA_ERROR(cudaFree(gpu_A_array));
-    CHECK_CUDA_ERROR(cudaFree(gpu_B_array));
-    CHECK_CUDA_ERROR(cudaFree(gpu_C_array));
-}
-
-void multiply_tensor(float *gpu_result, float *gpu_A, float *gpu_B, int slices, int m, int n, int k) {
-    // Allocate arrays for the pointers
-    float** A_array = new float*[slices]{0};
-    float** B_array = new float*[slices]{0};
-    float** result_array = new float*[slices]{0};
-
-    for (int i = 0; i < slices; ++i) {
-        A_array[i] = gpu_A + i * m * k;
-        B_array[i] = gpu_B + i * k * n;
-        result_array[i] = gpu_result + i * m * n;
-    }
-
-    float** gpu_A_array;
-    float** gpu_B_array;
-    float** gpu_C_array;
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A_array, slices * sizeof(float*)));
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B_array, slices * sizeof(float*)));
-    CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_C_array, slices * sizeof(float*)));
-
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_A_array, A_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_B_array, B_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
-    CHECK_CUDA_ERROR(cudaMemcpy(gpu_C_array, result_array, slices * sizeof(float*), cudaMemcpyHostToDevice));
-
-    // Perform batched matrix multiplication
-    CHECK_CUBLAS_ERROR(cublasSgemmBatched(HANDLE, CUBLAS_OP_N, CUBLAS_OP_N, m, n, k,
-                                          &ALPHA, (const float**)gpu_A_array, m,
-                                          (const float**)gpu_B_array, k,
-                                          &BETA, gpu_C_array, m, slices));
-
-    // Free dynamically allocated arrays
-    delete[] A_array;
-    delete[] B_array;
-    delete[] result_array;
-
-    CHECK_CUDA_ERROR(cudaFree(gpu_A_array));
-    CHECK_CUDA_ERROR(cudaFree(gpu_B_array));
-    CHECK_CUDA_ERROR(cudaFree(gpu_C_array));
-}
-
 // Function to print a tensor
 void print_tensor(string name, const float *gpu_tensor, int slices, int rows, int cols) {
     float *tensor = new float[slices * rows * cols];
@@ -354,40 +372,9 @@ void xavier_init(float *gpu_W, int m, int n) {
     CHECK_CUDA_ERROR(cudaDeviceSynchronize());
 }
 
-void print_batch(float *gpu_X, int num_features, int batch_size, float *gpu_Y, int num_classes) {
-    // CPU matrices
-    float *X = new float[num_features * batch_size];
-    float *Y = new float[num_classes * batch_size];
-
-    // Copy from GPU to CPU
-    CHECK_CUDA_ERROR(cudaMemcpy(X, gpu_X, num_features * batch_size * sizeof(float), cudaMemcpyDeviceToHost));
-    CHECK_CUDA_ERROR(cudaMemcpy(Y, gpu_Y, num_classes * batch_size * sizeof(float), cudaMemcpyDeviceToHost));
-
-    for (int i = 0; i < batch_size; i++) {
-        // Print image
-        for (int value = 0; value < 784; value++) {
-            if (value != 0 && value % 28 == 0) {
-                cout << endl;
-            }
-            if (X[value + i * 784] < 0.5) {
-                cout << "@.@"; // Represents dark pixel
-            } else {
-                cout << " . "; // Represents light pixel
-            }
-        }
-        cout << endl;
-        cout << " - ACTUAL LABEL: ";
-        for (int label = 0; label < 10; label++) {
-            if (Y[label + i * 10] == 1) {
-                cout << label << endl;
-                break;
-            }
-        }
-        cout << endl;
-    }
-    delete[] X;
-    delete[] Y;
-}
+////////////////////////////////////////////////////////////////////////////////
+//                          CLASSES AND DEFINITIONS                           //
+////////////////////////////////////////////////////////////////////////////////
 
 class DeepCore {
 public:
@@ -453,6 +440,11 @@ public:
             // read weights and biases from file
             read_matrix(file, gpu_W, num_nodes, prev_num_nodes);
             read_matrix(file, gpu_B, num_nodes, 1);
+
+            // initialize fields for output string
+            name = "Dense";
+            output_shape = "(n, " + to_string(num_nodes) + ", 1)";
+            param_count = (prev_num_nodes * num_nodes) + num_nodes;
         }
         int init(int prev_num_nodes) override {
             this->prev_num_nodes = prev_num_nodes;
@@ -581,6 +573,10 @@ public:
         Flatten(int num_nodes) : num_nodes(num_nodes) {}
         Flatten(ifstream &file) {
             file.read((char *) &num_nodes, sizeof(int)); // next 4 bytes
+            // initialize fields for output string
+            name = "Flatten";
+            output_shape = "(n, " + to_string(num_nodes) + ", 1)";
+            param_count = 0;
         }
         int init(int prev_num_nodes) override {
             return num_nodes;
@@ -887,6 +883,26 @@ public:
                 }
                 file.read((char *) &layer_type, sizeof(LayerType));
             }
+            // Print the model
+            stringstream model_string;
+            model_string << "MODEL SPECIFICATIONS:" << endl;
+            model_string << "______________________________________________________________________" << endl;
+            model_string << " Layer (type)                 Output Shape                  Param #   " << endl;
+            model_string << "======================================================================" << endl;
+
+            int total_params = 0;
+            for (const auto& layer : layers) {
+                model_string << " " << left << setw(29) << layer->name 
+                << left << setw(30) << layer->output_shape 
+                << left << setw(10) << layer->param_count << endl;
+                total_params += layer->param_count;
+            }
+
+            model_string << "======================================================================" << endl;
+            model_string << "Total trainable params: " << total_params << "\n";
+            model_string << "______________________________________________________________________" << endl;
+            
+            cout << model_string.str();
             cout << ">>> READING COMPLETE." << endl << endl;
             file.close();
         } else {
@@ -1027,113 +1043,4 @@ private:
     }
 };
 
-void get_labels(float *Y, int num_classes, int num_samples, string path, int start_offset) {
-    ifstream labels_file(path, ios::in | ios::binary);
-    if (labels_file.is_open()) {
-        labels_file.seekg(start_offset);
-        for (int i = 0; i < num_samples; i++) {
-            int label;
-            labels_file.read((char *) &label, 1);
-            for (int j = 0; j < 10; j++) {
-                if (j == label) {
-                    Y[j + i * 10] = 1;
-                } else {
-                    Y[j + i * 10] = 0;
-                }
-            }
-        }
-        labels_file.close();
-    } else {
-        cerr << "ERROR: FAILED TO OPEN FILE " << path << endl;
-        exit(1);
-    }
-}
-
-void get_images(float *X, int num_features, int num_samples, string path, int start_offset) {
-    ifstream images_file(path, ios::in | ios::binary);
-    if (images_file.is_open()) {
-        images_file.seekg(start_offset);
-        for (int i = 0; i < num_samples; i++) {
-            for (int j= 0; j < 784; j++) {
-                int value = 0;
-                images_file.read((char *) &value, 1);
-                X[j + i * 784] = value/255.0; // Transform value from range [0, 255] to range [0, 1]
-            }
-        }
-        images_file.close();
-    } else {
-        cerr << "ERROR: FAILED TO OPEN FILE " << path << endl;
-        exit(1);
-    }
-}
-
-void print_batch(float *X, float *Y, int size) {
-    // For size number of labels/images, print them
-    for (int i = 0; i < size; i++) {
-        // Print label
-        cout << "The following number is: ";
-        for (int j = 0; j < 10; j++) {
-            if (Y[i*10 + j] == 1) {
-                cout << j << "\n";
-                break;
-            }
-        }
-        // Print image
-        for (int j = 0; j < 784; j++) {
-            if (j != 0 && j % 28 == 0) {
-                cout << "\n";
-            }
-            if (X[i*784 + j] < 0.5) {
-                cout << "@.@"; // Represents dark pixel
-            } else {
-                cout << " . "; // Represents light pixel
-            }
-        }
-        cout << "\n";
-    }
-}
-
-#define TRAIN_LABELS_FILE_PATH R"(.\data\train-labels.idx1-ubyte)"
-#define TRAIN_IMAGES_FILE_PATH R"(.\data\train-images.idx3-ubyte)"
-#define TEST_LABELS_FILE_PATH R"(.\data\t10k-labels.idx1-ubyte)"
-#define TEST_IMAGES_FILE_PATH R"(.\data\t10k-images.idx3-ubyte)"
-
-#define LABEL_START 8
-#define IMAGE_START 16
-
-#define NUM_TRAIN_IMAGES 60000
-#define NUM_TEST_IMAGES 10000
-
-float X[784 * NUM_TRAIN_IMAGES];
-float Y[10 * NUM_TRAIN_IMAGES];
-
-float test_X[784 * NUM_TEST_IMAGES];
-float test_Y[10 * NUM_TEST_IMAGES];
-
-int main() {
-    // Initialize cuBLAS handle
-    cublasCreate(&HANDLE);
-
-    get_images(X, 784, NUM_TRAIN_IMAGES, TRAIN_IMAGES_FILE_PATH, IMAGE_START);
-    get_labels(Y, 10, NUM_TRAIN_IMAGES, TRAIN_LABELS_FILE_PATH, LABEL_START);
-
-    get_images(test_X, 784, NUM_TEST_IMAGES, TEST_IMAGES_FILE_PATH, IMAGE_START);
-    get_labels(test_Y, 10, NUM_TEST_IMAGES, TEST_LABELS_FILE_PATH, LABEL_START);
-
-    DeepCore model;
-    model.add(make_unique<DeepCore::Flatten>(784));
-    model.add(make_unique<DeepCore::Dense>(400, RELU));
-    model.add(make_unique<DeepCore::Dense>(100, RELU));
-    model.add(make_unique<DeepCore::Dense>(10, SOFTMAX));
-    model.compile(CROSS_ENTROPY);
-    model.fit(X, 784, NUM_TRAIN_IMAGES, Y, 10, 50, 3, 0.1, test_X, NUM_TEST_IMAGES, test_Y);
-    model.evaluate(test_X, 784, NUM_TEST_IMAGES, test_Y, 10, 100);
-    model.save(R"(.\models\784-400-100-10.bin)");
-    model.destroy();
-
-    DeepCore model1;
-    model1.read(R"(.\models\784-400-100-10.bin)");
-    model1.evaluate(test_X, 784, NUM_TEST_IMAGES, test_Y, 10, 200);
-    model1.destroy();
-    return 0;
-}
+#endif

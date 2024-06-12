@@ -1,13 +1,10 @@
 NVCC= nvcc
 NVCCFLAGS= -lcublas
 
-train: ./train.cu
-	$(NVCC) $(NVCCFLAGS) ./train.cu -o ./train.exe
-	./train.exe
-
-eval: ./eval.cu
-	$(NVCC) $(NVCCFLAGS) ./eval.cu -o ./eval.exe
-	./eval.exe
+mnist: mnist.cu ../../src/deepcore.cu
+	$(NVCC) $(NVCCFLAGS) ./mnist.cu -o ./mnist.exe
+	rm -f ./mnist.exp ./mnist.lib
+	./mnist.exe
 
 clean:
 	rm -f *.o *.exe *.exp *.lib .*pdb
