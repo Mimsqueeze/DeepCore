@@ -842,6 +842,39 @@ public:
 
         delete[] data_offsets;
     }
+    void predict(float *predict_X, int num_features, int num_samples, float *predict_Y, int num_classes) {
+
+        // Initialize layers dependent on num_samples
+        int prev_num_nodes = -1;
+        for (const auto &layer : layers) {
+            prev_num_nodes = (*layer).init_batch(prev_num_nodes, num_samples);
+        }
+
+        // Load features
+        float *gpu_predict_X;
+        CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_predict_X, num_features * num_samples * sizeof(float)));
+        CHECK_CUDA_ERROR(cudaMemcpy(gpu_predict_X, predict_X, num_features * num_samples * sizeof(float), cudaMemcpyHostToDevice));
+
+        // Forward propagate each layer
+        float *gpu_A_prev = gpu_predict_X;
+        for (const auto &layer : layers) {
+            gpu_A_prev = layer->forward_prop(gpu_A_prev, num_samples);
+        }
+
+        // Copy from GPU to CPU
+        CHECK_CUDA_ERROR(cudaMemcpy(predict_Y, gpu_A_prev, num_classes * num_samples * sizeof(float), cudaMemcpyDeviceToHost));
+
+        // Free GPU memory
+        CHECK_CUDA_ERROR(cudaFree(gpu_predict_X));
+
+        // Update console
+        cout << ">>> PREDICTION COMPLETE." << endl << endl;
+
+        // Destroy layers dependent on batch size
+        for (const auto &layer : layers) {
+            layer->destroy_batch();
+        }
+    }
     void save(string path) {
         // Declare and open file
         ofstream file = ofstream(path, ios::out | ios::binary);
