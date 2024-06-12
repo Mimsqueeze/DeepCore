@@ -66,6 +66,9 @@ enum Loss {
     NO_LOSS = -1, CROSS_ENTROPY = 0, MSE = 1
 };
 
+enum LayerType {
+    NO_LAYER = -1, FLATTEN = 0, DENSE = 1
+};
 
 // CUDA kernel to add the bias vector to the activation matrix
 __global__ void add_bias_kernel(float *gpu_A, float *gpu_B, int rows, int cols) {
@@ -392,33 +395,69 @@ public:
 
     class Layer { // let's just make this a dense layer for now
     public:
-        virtual int init(int prev_num_nodes, int batch_size) = 0;
+        virtual int init_batch(int prev_num_nodes, int batch_size) = 0;
+        virtual int init(int prev_num_nodes) = 0;
         virtual void destroy() = 0;
+        virtual void destroy_batch() = 0;
         virtual float *forward_prop(float *gpu_A_prev, int batch_size) = 0;
         virtual float *back_prop(float *gpu_dC_dA, int batch_size) = 0;
         virtual void update_params(float learning_rate, int batch_size) = 0;
+        virtual void save(ofstream &file) = 0;
         string name, output_shape;
         int param_count;
+        static void save_matrix(ofstream &file, float *gpu_X, int rows, int cols) {
+            // Allocate memory on CPU
+            float *X = new float[rows * cols];
+
+            // Copy memory from GPU to CPU
+            CHECK_CUDA_ERROR(cudaMemcpy(X, gpu_X, rows * cols * sizeof(float), cudaMemcpyDeviceToHost));
+
+            for (int j = 0; j < cols; j++) {
+                for (int i = 0; i < rows; i++) {
+                    file.write((char *) &X[j * rows + i], sizeof(float));
+                }
+            }
+            // Free CPU memory
+            delete[] X;
+        }
+        static void read_matrix(ifstream &file, float *gpu_X, int rows, int cols) {
+            // Allocate memory on CPU
+            float *X = new float[rows * cols];
+
+            for (int j = 0; j < cols; j++) {
+                for (int i = 0; i < rows; i++) {
+                    file.read((char *) &X[j * rows + i], sizeof(float));
+                }
+            }
+
+            // Copy memory from CPU to GPU
+            CHECK_CUDA_ERROR(cudaMemcpy(gpu_X, X, rows * cols * sizeof(float), cudaMemcpyHostToDevice));
+
+            // Free CPU memory
+            delete[] X;
+        }
     };
 
     class Dense : public Layer {
     public:
         Dense(int num_nodes, Activation activation_func)
             : num_nodes(num_nodes), activation_func(activation_func) {}
+        Dense(ifstream &file) {
+            file.read((char *) &prev_num_nodes, sizeof(int)); // next 4 bytes
+            file.read((char *) &num_nodes, sizeof(int)); // next 4 bytes
+            file.read((char *) &activation_func, sizeof(int)); // next 4 bytes
 
-        int init(int prev_num_nodes, int batch_size) override {
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_W, num_nodes * prev_num_nodes * sizeof(float)));
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B, num_nodes * 1 * sizeof(float)));
+
+            // read weights and biases from file
+            read_matrix(file, gpu_W, num_nodes, prev_num_nodes);
+            read_matrix(file, gpu_B, num_nodes, 1);
+        }
+        int init(int prev_num_nodes) override {
             this->prev_num_nodes = prev_num_nodes;
             CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_W, num_nodes * prev_num_nodes * sizeof(float)));
             CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_B, num_nodes * 1 * sizeof(float)));
-            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A, num_nodes * batch_size * sizeof(float)));
-
-            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dA_dZ, batch_size * num_nodes * num_nodes * sizeof(float)));
-            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ_dA_prev, batch_size * num_nodes * prev_num_nodes * sizeof(float)));
-            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dA_dA_prev, batch_size * num_nodes * prev_num_nodes * sizeof(float)));
-
-            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dZ, batch_size * 1 * num_nodes * sizeof(float)));
-            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dW, batch_size * num_nodes * prev_num_nodes * sizeof(float)));
-            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dB, batch_size * 1 * num_nodes * sizeof(float)));
 
             if (activation_func == RELU) { // initialize weights
                 he_init(gpu_W, num_nodes, prev_num_nodes);
@@ -428,6 +467,20 @@ public:
 
             // initialized biases
             CHECK_CUDA_ERROR(cudaMemset(gpu_B, 0, num_nodes * 1 * sizeof(float)));
+
+            return num_nodes;
+        }
+        int init_batch(int prev_num_nodes, int batch_size) override {
+            this->prev_num_nodes = prev_num_nodes;
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A, num_nodes * batch_size * sizeof(float)));
+
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dA_dZ, batch_size * num_nodes * num_nodes * sizeof(float)));
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dZ_dA_prev, batch_size * num_nodes * prev_num_nodes * sizeof(float)));
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dA_dA_prev, batch_size * num_nodes * prev_num_nodes * sizeof(float)));
+
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dZ, batch_size * 1 * num_nodes * sizeof(float)));
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dW, batch_size * num_nodes * prev_num_nodes * sizeof(float)));
+            CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_dC_dB, batch_size * 1 * num_nodes * sizeof(float)));
 
             // initialize fields for output string
             name = "Dense";
@@ -439,6 +492,8 @@ public:
         void destroy() override {
             CHECK_CUDA_ERROR(cudaFree(gpu_W));
             CHECK_CUDA_ERROR(cudaFree(gpu_B));
+        }
+        void destroy_batch() override {
             CHECK_CUDA_ERROR(cudaFree(gpu_A));
 
             CHECK_CUDA_ERROR(cudaFree(gpu_dA_dZ));
@@ -493,6 +548,15 @@ public:
             CHECK_CUDA_ERROR(cudaGetLastError());
             CHECK_CUDA_ERROR(cudaDeviceSynchronize());
         }
+        void save(ofstream &file) {
+            LayerType layer_type = DENSE;
+            file.write((char *) &layer_type, sizeof(int)); // first 4 bytes
+            file.write((char *) &prev_num_nodes, sizeof(int)); // next 4 bytes
+            file.write((char *) &num_nodes, sizeof(int)); // next 4 bytes
+            file.write((char *) &activation_func, sizeof(int)); // next 4 bytes
+            save_matrix(file, gpu_W, num_nodes, prev_num_nodes);
+            save_matrix(file, gpu_B, num_nodes, 1);
+        }
     private:
         int prev_num_nodes;
         int num_nodes;
@@ -515,7 +579,13 @@ public:
     class Flatten : public Layer {
     public:
         Flatten(int num_nodes) : num_nodes(num_nodes) {}
-        int init(int prev_num_nodes, int batch_size) override {
+        Flatten(ifstream &file) {
+            file.read((char *) &num_nodes, sizeof(int)); // next 4 bytes
+        }
+        int init(int prev_num_nodes) override {
+            return num_nodes;
+        }
+        int init_batch(int prev_num_nodes, int batch_size) override {
             CHECK_CUDA_ERROR(cudaMalloc((void**)&gpu_A, num_nodes * batch_size * sizeof(float)));
 
             // initialize fields for output string
@@ -525,7 +595,8 @@ public:
 
             return num_nodes;
         }
-        void destroy() override {
+        void destroy() override {}
+        void destroy_batch() override {
             CHECK_CUDA_ERROR(cudaFree(gpu_A));
         }
         float *forward_prop(float *gpu_A_prev, int batch_size) override {
@@ -536,6 +607,11 @@ public:
             return gpu_dC_dA;
         }
         void update_params(float learning_rate, int batch_size) override {}
+        void save(ofstream &file) {
+            LayerType layer_type = FLATTEN;
+            file.write((char *) &layer_type, sizeof(int)); // first 4 bytes
+            file.write((char *) &num_nodes, sizeof(int)); // next 4 bytes
+        }
     private:
         int num_nodes;
         float *gpu_A;
@@ -546,6 +622,11 @@ public:
     }
     void compile(Loss loss_func) {
         this->loss_func = loss_func;
+        // Initialize layers
+        int prev_num_nodes = -1;
+        for (const auto &layer : layers) {
+            prev_num_nodes = (*layer).init(prev_num_nodes);
+        }
     }
     void destroy() {
         for (const auto &layer : layers) {
@@ -558,10 +639,10 @@ public:
         // Note: X must be of dimension num_features x num_samples
         // Y is of dimension num_classes x num_samples
 
-        // Initialize layers
+        // Initialize layers dependent on batch size
         int prev_num_nodes = -1;
         for (const auto &layer : layers) {
-            prev_num_nodes = (*layer).init(prev_num_nodes, batch_size);
+            prev_num_nodes = (*layer).init_batch(prev_num_nodes, batch_size);
         }
 
         // Print the compiled model
@@ -673,11 +754,21 @@ public:
         }
 
         cout << ">>> TRAINING COMPLETE." << endl << endl;
+
+        // Destroy layers dependent on batch size
+        for (const auto &layer : layers) {
+            layer->destroy_batch();
+        }
     }
     void evaluate(float *test_X, int num_features, int num_test, float *test_Y, int num_classes, int batch_size = 50) {
 
+        // Initialize layers dependent on batch size
+        int prev_num_nodes = -1;
+        for (const auto &layer : layers) {
+            prev_num_nodes = (*layer).init_batch(prev_num_nodes, batch_size);
+        }
+
         int num_test_batches = (num_test / batch_size);
-        
         num_test = num_test_batches * batch_size;
 
         int test_correct = 0;
@@ -747,7 +838,61 @@ public:
 
         CHECK_CUDA_ERROR(cudaFree(gpu_test_X));
         CHECK_CUDA_ERROR(cudaFree(gpu_test_Y));
+
+        // Destroy layers dependent on batch size
+        for (const auto &layer : layers) {
+            layer->destroy_batch();
+        }
+
         delete[] data_offsets;
+    }
+    void save(string path) {
+        // Declare and open file
+        ofstream file = ofstream(path, ios::out | ios::binary);
+
+        cout << "SAVING MODEL TO " << path << endl;
+
+        if (file.is_open()) {
+            // Save each layer to file
+            for (const auto &layer : layers) {
+                layer->save(file);
+            }
+
+            // Denotes end of the model
+            LayerType end_of_file = NO_LAYER;
+            file.write((char *) &end_of_file, sizeof(int)); // first 4 bytes
+
+            cout << ">>> SAVING COMPLETE." << endl << endl;
+            // Close the file
+            file.close();
+        } else {
+            cerr << "ERROR: FAILED TO OPEN FILE " << path;
+            exit(1);
+        }
+    }
+    void read(string path) {
+        // Declare and open file
+        ifstream file(path, ios::in | ios::binary);
+
+        cout << "READING MODEL FROM " << path << endl;
+
+        if (file.is_open()) {
+            LayerType layer_type;
+            file.read((char *) &layer_type, sizeof(LayerType));
+            while (layer_type != NO_LAYER) {
+                if (layer_type == FLATTEN) {
+                    this->add(make_unique<DeepCore::Flatten>(file));
+                } else if (layer_type == DENSE) {
+                    this->add(make_unique<DeepCore::Dense>(file));
+                }
+                file.read((char *) &layer_type, sizeof(LayerType));
+            }
+            cout << ">>> READING COMPLETE." << endl << endl;
+            file.close();
+        } else {
+            cerr << "ERROR: FAILED TO OPEN FILE " << path;
+            exit(1);
+        }
     }
 private:
     vector<unique_ptr<DeepCore::Layer>> layers;
@@ -978,11 +1123,17 @@ int main() {
     DeepCore model;
     model.add(make_unique<DeepCore::Flatten>(784));
     model.add(make_unique<DeepCore::Dense>(400, RELU));
-    model.add(make_unique<DeepCore::Dense>(200, RELU));
+    model.add(make_unique<DeepCore::Dense>(100, RELU));
     model.add(make_unique<DeepCore::Dense>(10, SOFTMAX));
     model.compile(CROSS_ENTROPY);
-    model.fit(X, 784, NUM_TRAIN_IMAGES, Y, 10, 50, 10, 0.1, test_X, NUM_TEST_IMAGES, test_Y);
-    model.evaluate(test_X, 784, NUM_TEST_IMAGES, test_Y, 10, 50);
+    model.fit(X, 784, NUM_TRAIN_IMAGES, Y, 10, 50, 3, 0.1, test_X, NUM_TEST_IMAGES, test_Y);
+    model.evaluate(test_X, 784, NUM_TEST_IMAGES, test_Y, 10, 100);
+    model.save(R"(.\models\784-400-100-10.bin)");
     model.destroy();
+
+    DeepCore model1;
+    model1.read(R"(.\models\784-400-100-10.bin)");
+    model1.evaluate(test_X, 784, NUM_TEST_IMAGES, test_Y, 10, 200);
+    model1.destroy();
     return 0;
 }
