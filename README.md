@@ -244,8 +244,26 @@ model.destroy();
 None
 ```
 ## Stochastic Gradient Descent Algorithm
-WIP
-Given a set of input data X, a set of labels L, a set of parameters Θ, and a model Y(X,Θ), we want to find a set of parameters $`\sqrt{3x-1}+(1+x)^2`$ that minimizes a cost function C(L, Y). 
+Given a set of input data $X$, a set of labels $Y$, a set of parameters $\Theta$, and a model $\hat{Y}(X,\Theta)$, we want to find a set of parameters $\hat{\Theta}$ that minimizes a cost function $C(Y, \hat{Y})$. 
+
+To do this, we must find the gradient of the cost function $\nabla C$, which is a vector of all the partial derivatives of $C$ relative to every parameter $\theta \in \Theta$. The gradient tells us the sensitivity of the cost $C$ relative to each parameter $\theta \in \Theta$. 
+
+In simple words, it tells us the factor by which the cost $C$ changes with respect to a change in a given parameter $\theta$. For example, if for a given parameter $\theta$, the partial derivative of $C$ with respect to $\theta$ is $\frac{dC}{d\theta} = 2$, then a change of parameter $\theta$ by $-0.1$ would result in a change in the cost $C$ by $-0.1*2 = -0.2$. This provides us with a direct method of minimizing the cost $C$, by updating each parameter as follows: $\theta_{new} = \theta_{old}-\eta\frac{dC}{d\theta}$, where $\eta$ is the learning rate hyperparameter and $\frac{dC}{d\theta}$ comes from $\nabla C$. 
+
+All that's left is to compute the gradient vector $\nabla C$, and we'll be able to update our parameters to minimize $C$. But how exactly do we compute the gradient?
+
+Consider a simplified example. Suppose we had a single data sample, represented by a vector $\vec{x}$, and its label, represented by a vector $\vec{y}$. Suppose our model consists of a `Flatten` layer, a hidden `Dense (ReLU)` layer, and an output `Dense (Softmax)` layer we will call $L^{(0)}$, $L^{(1)}$, and $L^{(2)}$ respectively. Each layer in a neural network consists of activation vectors we will call $\vec{a^{(0)}}$, $\vec{a^{(1)}}$, and $\vec{a^{(2)}}$ respectively. The activation of our `Flatten` layer will simply be our input data $\vec{a^{(0)}} = \vec{x}$. The activations of `Dense` layers are defined as $\vec{a^{(L)}}=f(\vec{z^{(L)}})$, where $f$ is some activation function and $\vec{z^{(L)}} = W^{(L)}\vec{a^{(L-1)}}+\vec{b^{(L)}})$, where $L$ is the current layer, $L-1$ is the previous layer, $W^{(L)}$ is the matrix of weights associated with layer $L$, and $\vec{b^{(L)}}$ is the vector of biases associated with layer $L$. These weights and biases are the parameters we want to "tune" in order to minimize the cost $C$. Thus we are interested in $\frac{dC}{dW^{(L)}}$ and $\frac{dC}{d\vec{b^{(L)}}}$ for each layer $L$. 
+
+Since the output layer undergoes `Softmax`, our model outputs probabilites of a given output class $i \in classes$ in the vector $\vec{a^{(2)}}$. Then, our cost function $C$ will be in terms of the vector $\vec{a^{(2)}}$ and $\vec{y}$. Suppose that our cost function $C$ is defined as $C(\vec{a^{(2)}},\vec{y})=-\sum_{i \in classes}{y_i*log({a^{(2)}_i})}$, known as `Cross-Entropy Loss`. Then, the derivative of the cost function $C$ with respect to activations in the second layer is a Jacobian $\frac{dC}{d\vec{a^{(2)}}}$, where $\frac{dC}{da^{(2)}_i}=-y_i*\frac{1}{a^{(2)}_i}$. Similarly, $\frac{d\vec{a^{(2)}}}{d\vec{z^{(2)}}}$ is a Jacobian where $\frac{d\vec{a^{(2)}_i}}{d\vec{z^{(2)}_j}}=a^{(2)}_i(\delta_{ij}-a^{(2)}_j)$, where $\delta_{ij}=\left\{
+\begin{array}{c}
+    1 \\
+    0
+\end{array}
+\begin{array}{c}
+    i=j \\
+    i\neq j
+\end{array}
+\right\}$. This comes from the activations of the second layer $\vec{a^{(2)}}$ being defined as $\vec{a^{(2)}}=f(\vec{z^{(2)}})$ where $f(z_i) = \frac{e^{z_i}}{\sum_{j=1}^{K} e^{z_j}}$ is the `softmax` function.
 
 ## Resources
 #### CUDA Runtime
