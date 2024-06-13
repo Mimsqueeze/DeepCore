@@ -4,7 +4,7 @@ DeepCore is a C++ neural network library that leverages CUDA for accelerated ten
 ## Installation and Usage
 Clone the repository into a local directory. Ensure you have the [CUDA Toolkit 12.5](https://developer.nvidia.com/cuda-toolkit), the [Microsoft Visual Studio Compiler](https://visualstudio.microsoft.com/) (cl.exe), and other relevant dependencies installed. Ensure your `PATH` is configured correctly.
 
-To use the DeepCore library, simply include the `./src/deepcore.cu` file into your project source code. You will then be able to access all of the functions provided by the library. Compile your project with the `nvcc` compiler. Refer to the `./examples/` directory for practical examples of ultilizing DeepCore. 
+To use the DeepCore library, simply include the [`./src/deepcore.cu`](https://github.com/Mimsqueeze/DeepCore/blob/main/src/deepcore.cu) file into your project source code. You will then be able to access all of the functions provided by the library. Compile your project with the `nvcc` compiler. Refer to the [`./examples/`](https://github.com/Mimsqueeze/DeepCore/tree/main/examples) directory for practical examples of ultilizing DeepCore. 
 
 ## DeepCore API Documentation
 
@@ -16,6 +16,7 @@ An abstract base class for neural network layers.
 A dense (fully connected) neural network layer. Trainable parameters consist of a weights and biases matrix. Non-trainable parameters consist of the size of the dense layer (number of nodes) and its activation function.
 ##### `Dense(int num_nodes, Activation activation_func)` constructor
 Creates a dense layer consisting of `num_nodes` nodes and `activation_func` activation function.
+
 **Arguments**
 - `int num_nodes`: The size of number of nodes of the Dense layer.
 - `Activation activation_func`: The activation function of the Dense layer. Currently implemented activation functions include `RELU` and `SOFTMAX`
@@ -29,6 +30,7 @@ model.add(make_unique<DeepCore::Dense>(10, SOFTMAX));
 A flattening neural network layer. Serves as an input layer into a dense neural network. Does not contain trainable parameters, with its only non-trainable parameter being its size (number of nodes).
 ##### `Flatten(int num_nodes)` constructor
 Creates a flattening layer consisting of `num_nodes` nodes.
+
 **Arguments**
 - `int num_nodes`: The size of number of nodes of the Dense layer.
 
@@ -44,7 +46,7 @@ A DeepCore model is instantiated by simply declaring an object its type:
 ```cpp
 DeepCore model;
 ```
-Once you've declared the model, you can add layers using `add()`, configure it with `compile()`, and then train the model using `fit()`. Alternatively, if you have a model saved in a file, you can load it using `read()`. Once loaded, you can use the model for predictions with `predict()`, evaluate its performance on test data with `evaluate()`, or save it back to a file with `save()`. When you're done using the model, remember to free up program resources by calling `destroy()`. An snippet of using DeepCore is below; refer to `./examples/mnist` for the entire example.
+Once you've declared the model, you can add layers using `add()`, configure it with `compile()`, and then train the model using `fit()`. Alternatively, if you have a model saved in a file, you can load it using `read()`. Once loaded, you can use the model for predictions with `predict()`, evaluate its performance on test data with `evaluate()`, or save it back to a file with `save()`. When you're done using the model, remember to free up program resources by calling `destroy()`. An snippet of using DeepCore is below; refer to [`./examples/mnist`](https://github.com/Mimsqueeze/DeepCore/blob/main/examples/mnist/mnist.cu) for the entire example.
 ```cpp
 // Training, evaluating, and saving a model to file
 DeepCore model;
@@ -68,6 +70,7 @@ model.destroy();
 ```
 #### `void add()` method
 Adds a layer to the model.
+
 **Arguments**
 - `std::unique_ptr<DeepCore::Layer> layer`: A unique pointer managing the Layer to be added to the model.
 
@@ -82,6 +85,7 @@ None
 ```
 #### `void compile()` method
 Configures and initializes the model with the provided loss function. 
+
 **Arguments**
 - `Loss loss_func`: The specific loss function the model should use. Currently implemented loss functions include `CROSS_ENTROPY` and `MSE`.
 
@@ -97,6 +101,7 @@ None
 #### `void fit()` method
 Fits the model to the input data (features) `X` and target data (labels) `Y` using stochastic gradient descent. Optionally evaluates performance on a validation set after each epoch. 
 Note: The model must have already been compiled with `compile()`.
+
 **Arguments**
 - `float *X`: The input data matrix to train the model. Should be of dimension `num_features`×`num_samples`.
 - `int num_features`: Number of features (input dimensions) of the dataset.
@@ -153,6 +158,7 @@ TRAIN ACCURACY: 59353/60000 (98.92%) - VALIDATION ACCURACY: 9756/10000 (97.56%) 
 #### `void evaluate()` method
 Evaluates a trained model on the input data (features) `X` and target data (labels) `Y`. 
 Note: The model must have been trained with `fit()` or read from file with `read()`.
+
 **Arguments**
 - `float *test_X`: The input data matrix to test the model. Should be of dimension `num_features`×`num_samples`.
 - `int num_features`: Number of features (input dimensions) of the dataset.
@@ -174,6 +180,7 @@ BATCH 200/200 [================================] - TEST ACCURACY: 9756/10000 (97
 #### `void predict()` method
 Predicts target data (labels) `predict_Y` of the input data (features) `predict_X` using a trained model. 
 Note: The memory for `predict_Y` must be allocated and managed by the caller. The model must have been trained with `fit()` or read from file with `read()`.
+
 **Arguments**
 - `float *predict_X`: The input data matrix to test the model. Should be of dimension `num_features`×`num_samples`.
 - `int num_features`: Number of features (input dimensions) of the dataset.
@@ -192,6 +199,7 @@ model.predict(predict_X, 784, 50, predict_Y, 10);
 ```
 #### `void save()` method
 Saves all the information (layer information, weights, biases) about the model to file `path`. The model can be recovered with `read()`.
+
 **Arguments**
 - `string path`: Path of the file for the model to be saved into.
 
@@ -207,6 +215,7 @@ SAVING MODEL TO .\models\784-300-100-10.bin
 #### `void read()` method
 Reads and loads all the information (layer information, weights, biases) about the model from file `path`. 
 Note: After `read()` is called the model does not need to be compiled with `compile()`.
+
 **Arguments**
 - `string path`: Path of the file for the model to be loaded from.
 
@@ -232,6 +241,7 @@ ______________________________________________________________________
 ```
 #### `void destroy()` method
 Frees the rest of the memory associated with the model that was allocated from `compile()` or `read()`.
+
 **Arguments**
 - `None`
 
@@ -243,7 +253,7 @@ model.destroy();
 ```
 None
 ```
-## Stochastic Gradient Descent Algorithm
+## Algorithm (SGD)
 The goal is the following. Given a set of input data $X$, a set of labels $Y$, a set of parameters $\Theta$, and a model $\hat{Y}(X,\Theta)$, we want to find a set of parameters $\hat{\Theta}$ that minimizes a cost function $C(Y, \hat{Y})$. 
 
 To do this, we must find the gradient of the cost function $\nabla C$, which is a vector of all the partial derivatives of $C$ relative to every parameter $\theta \in \Theta$. The gradient tells us the sensitivity of the cost $C$ relative to each parameter $\theta \in \Theta$. 
@@ -282,5 +292,5 @@ DeepCore uses NVIDIA's [CUDA](https://developer.nvidia.com/cuda-toolkit) paralle
 DeepCore uses NVIDIA's [cuBLAS](https://docs.nvidia.com/cuda/cublas/index.html), a lightweight library built on top of NVIDIA's CUDA runtime, dedicated to performing basic linear algebra operations. DeepCore extends cuBLAS's functionality by implementing a tensor multiplication function with cuBLAS's batched matrix multiplication function.
 #### MNIST Dataset
 DeepCore was evaluated using the [MNIST](http://yann.lecun.com/exdb/mnist/index.html) dataset, a popular benchmark dataset for digit recognition tasks. The [MNIST](http://yann.lecun.com/exdb/mnist/index.html) dataset consists of 60,000 training images and 10,000 testing images of handwritten digits. Each image is a grayscale image of size 28x28 pixels.
-## Personal word
+## Personal Word
 As a rising junior undergrad pursuing Computer Science and Applied Mathematics, I created this project out of personal interest to gain a deeper understanding of the underlying mathematics behind artificial neural networks, and to achieve my long-awaited goal of learning GPU/CUDA programming. Throughout the journey, I learned C++ OOP, CUDA programming, cuBLAS, and solidified my understanding of backpropagation. Other than using cuBLAS for basic matrix operations, everything was implemented from scratch - starting literally from a scratch sheet of paper containing mathematical constructs to a realized program.  Huge thanks to the [Stanford CS224N NLP with Deep Learning](https://youtu.be/X0Jw4kgaFlg?si=O9N0UqGuZ3VsixyQ) course and [3Blue1Brown's Deep Learning Series](https://youtu.be/tIeHLnjs5U8?si=jFUHxcMr3w0KXxM2) for being incredible free and online resources. If you have any suggestions/comments, feel free to reach out!
