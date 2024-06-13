@@ -46,7 +46,7 @@ A DeepCore model is instantiated by simply declaring an object its type:
 ```cpp
 DeepCore model;
 ```
-Once you've declared the model, you can add layers using `add()`, configure it with `compile()`, and then train the model using `fit()`. Alternatively, if you have a model saved in a file, you can load it using `read()`. Once loaded, you can use the model for predictions with `predict()`, evaluate its performance on test data with `evaluate()`, or save it back to a file with `save()`. When you're done using the model, remember to free up program resources by calling `destroy()`. An snippet of using DeepCore is below; refer to [`./examples/mnist`](https://github.com/Mimsqueeze/DeepCore/blob/main/examples/mnist/mnist.cu) for the entire example.
+Once you've declared the model, you can add layers using `add()`, configure it with `compile()`, and then train the model using `fit()`. Alternatively, if you have a model saved in a file, you can load it using `read()`. Once loaded, you can use the model for predictions with `predict()`, evaluate its performance on test data with `evaluate()`, or save it back to a file with `save()`. When you're done using the model, remember to free up program resources by calling `destroy()`. An snippet of using DeepCore is below; refer to [`./examples/mnist`](https://github.com/Mimsqueeze/DeepCore/blob/main/examples/mnist/mnist.cu) for the entire example. The saved model and outputs of the program can also be found in [`./examples/mnist/models`](https://github.com/Mimsqueeze/DeepCore/tree/main/examples/mnist/models) and [`./examples/mnist/outputs`](https://github.com/Mimsqueeze/DeepCore/tree/main/examples/mnist/outputs) respectively.
 ```cpp
 // Training, evaluating, and saving a model to file
 DeepCore model;
