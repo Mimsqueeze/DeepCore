@@ -134,23 +134,23 @@ ______________________________________________________________________
 Total trainable params: 266610
 ______________________________________________________________________
 
-EPOCH 1/20
+EPOCH 1/5
 BATCH 1200/1200 [================================] - BATCH ACCURACY: 0.940 - TOTAL ACCURACY: 0.922
 TRAIN ACCURACY: 55313/60000 (92.19%) - VALIDATION ACCURACY: 9588/10000 (95.88%) - TIME ELAPSED: 28.15s - ETA: 00:01:52
 
-EPOCH 2/20
+EPOCH 2/5
 BATCH 1200/1200 [================================] - BATCH ACCURACY: 1.000 - TOTAL ACCURACY: 0.968
 TRAIN ACCURACY: 58102/60000 (96.84%) - VALIDATION ACCURACY: 9674/10000 (96.74%) - TIME ELAPSED: 34.58s - ETA: 00:01:42
 
-EPOCH 3/20
+EPOCH 3/5
 BATCH 1200/1200 [================================] - BATCH ACCURACY: 0.980 - TOTAL ACCURACY: 0.978
 TRAIN ACCURACY: 58700/60000 (97.83%) - VALIDATION ACCURACY: 9715/10000 (97.15%) - TIME ELAPSED: 29.57s - ETA: 00:00:58
 
-EPOCH 4/20
+EPOCH 4/5
 BATCH 1200/1200 [================================] - BATCH ACCURACY: 1.000 - TOTAL ACCURACY: 0.985
 TRAIN ACCURACY: 59073/60000 (98.45%) - VALIDATION ACCURACY: 9715/10000 (97.15%) - TIME ELAPSED: 30.85s - ETA: 00:00:30
 
-EPOCH 5/20
+EPOCH 5/5
 BATCH 1200/1200 [================================] - BATCH ACCURACY: 0.980 - TOTAL ACCURACY: 0.989
 TRAIN ACCURACY: 59353/60000 (98.92%) - VALIDATION ACCURACY: 9756/10000 (97.56%) - TIME ELAPSED: 28.64s - ETA: 00:00:00
 >>> TRAINING COMPLETE.
@@ -282,7 +282,7 @@ And... doing this for every layer and parameter in our model, we're finished! In
 
 The true gradient descent algorithm works, but it has some flaws. The main flaw is that it is computationally expensive and slow to compute for large training datasets. In order to make but a single update to our parameters $\Theta$, we must iterate over every single training example in order to compute the true gradient. To address this issue, let's randomly partition our whole dataset (batch) into uniformly sized mini-batches. Let's approximate the true gradient $\nabla C$, computed with the entire training set (or batch), with a gradient computed with a mini-batch of the data $\nabla \hat{C}$. Then, use this gradient approximation $\nabla \hat{C}$ to update our parameters $\Theta$. This will allow us to make several updates to our parameters $\Theta$ in each epoch, and it is much more efficient to compute. Turns out, this process of approximating the true gradient with mini-batches of the training data, and making more frequent updates to our parameters $\Theta$ works astronomically better than true gradient descent algorithm in the real world in most cases. This is the idea of **stochastic gradient descent**, "stochastic" refering to a process that involves randomness or probabilistic elements. Stochastic gradient descent is much more computationally efficient, requires less memory usage, can be parallelized more effectively, and scale better with larger datasets and high-dimensional data. It does, however, often require require tuning of hyperparameters such as learning rate and mini-batch size to achieve optimal performance.
 
-Stochastic gradient descent is the algorithm DeepCore implements to fit a model, attempting to find a set of parameters $\hat{\Theta}$ which minimize the cost function $C(Y, \hat{Y})$. 
+Stochastic gradient descent is the algorithm DeepCore implements to fit a model, attempting to find a set of parameters $\hat{\Theta}$ that minimize the cost function $C(Y, \hat{Y})$. 
 
 ## Resources
 #### CUDA Runtime
