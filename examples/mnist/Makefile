@@ -1,5 +1,5 @@
 NVCC= nvcc
-NVCCFLAGS= -lcublas -g -G
+NVCCFLAGS= -lcublas -g -G -arch=sm_75
 
 mnist: mnist.cu ../../src/deepcore.cu
 	$(NVCC) $(NVCCFLAGS) ./mnist.cu -o ./mnist.exe
