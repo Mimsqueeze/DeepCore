@@ -284,6 +284,25 @@ The true gradient descent algorithm works, but it has some flaws. The main flaw 
 
 Stochastic gradient descent with tunable mini-batch size is the algorithm DeepCore implements to fit a model, attempting to find a set of parameters $\hat{\Theta}$ that minimize the cost function $C(Y, \hat{Y})$. 
 
+## Efficiency: DeepCore vs. PyTorch
+To see how DeepCore's hand-written CUDA/cuBLAS implementation stacks up against a mature deep learning framework, the MNIST example was benchmarked against an equivalent PyTorch implementation ([`./examples/mnist/mnist.py`](https://github.com/Mimsqueeze/DeepCore/blob/main/examples/mnist/mnist.py)). Both use the same architecture and hyperparameters, and train on the same MNIST data (loaded from the same raw IDX files):
+- `784 -> Dense(300, ReLU) -> Dense(100, ReLU) -> Dense(10, Softmax)`
+- Cross-entropy loss, plain (non-momentum) mini-batch SGD
+- `batch_size = 50`, `learning_rate = 0.1`, `5` epochs
+
+Benchmarked on an NVIDIA GeForce RTX 3080. DeepCore was compiled as an optimized release build (`nvcc -lcublas -O3 -arch=sm_86`), not the debug flags (`-g -G`) in the example [`Makefile`](https://github.com/Mimsqueeze/DeepCore/blob/main/examples/mnist/Makefile), to keep the comparison fair.
+
+| | Avg epoch time | Total train time (5 epochs) | Final test accuracy |
+|---|---|---|---|
+| **PyTorch** | ~1.82s | 9.60s | 97.65% |
+| **DeepCore** | ~25.6s | ~127.8s | 97.44% |
+
+Both implementations converge to essentially the same accuracy, but PyTorch trains roughly **14x faster**. This isn't primarily a raw kernel-speed gap — both rely on cuBLAS for the underlying matrix multiplications. It comes down to structural overhead in DeepCore's training loop:
+- **Per-sample host-to-device transfers.** Each mini-batch is staged with one `cudaMemcpy` per sample rather than a single batched copy — 1,200 batches × 50 samples × 2 arrays (X, Y) = 120,000 small transfers per epoch, where fixed per-call overhead dominates over bandwidth.
+- **A `cudaDeviceSynchronize()` after nearly every kernel launch** (bias-add, activation, each Jacobian, each parameter update) forces the GPU pipeline to drain and the host to block dozens of times per batch, preventing any asynchronous overlap. PyTorch dispatches ops onto a CUDA stream and only synchronizes when a result is actually needed.
+
+As this project is less about implementing an ultra-fast optimized neural network, and instead more about understanding neural networks, the performance speed is lacking in practice (don't use this for real applications). In the future I may try to optimize DeepCore's performance with better CUDA techniques. We'll see!
+
 ## Resources
 #### CUDA Runtime
 DeepCore uses NVIDIA's [CUDA](https://developer.nvidia.com/cuda-toolkit) parallel computing platform, allowing for parallelization of tasks such as computing Jacobians or applying activation functions to matrices.

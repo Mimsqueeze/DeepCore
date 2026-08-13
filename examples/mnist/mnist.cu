@@ -116,7 +116,7 @@ int main() {
     int num_features = 784;
     int num_classes = 10;
     int batch_size = 50;
-    int num_epochs = 20;
+    int num_epochs = 5;
     float learning_rate = 0.1;
 
     // DeepCore model_1;
